@@ -156,7 +156,7 @@ function stopCard(p, list) {
       <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}">🔔</button>
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}</span>
-      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}${a.live ? '' : '<span class="sched">scheduled</span>'}</span>
+      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}${a.live ? '' : '<span class="sched">🕒 sched.</span>'}</span>
     </div>`).join('') : '<div class="empty">No upcoming buses</div>';
   return `<div class="card"><h2><span class="name">${esc(p.name)}</span><button data-unpin="${esc(p.id)}" aria-label="Unpin">✕</button></h2>${rows}</div>`;
 }
@@ -187,7 +187,7 @@ async function refreshPins() {
     pinRoutes = new Set([...lists.flat().map((a) => a.route), ...routePins.map((r) => r.short)]);
     $('#pins').innerHTML = (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, buses)).join('') : '')
       + (pins.length ? '<div class="section-title">Stops</div>' + pins.map((p, i) => stopCard(p, lists[i])).join('') : '')
-      || '<div class="empty" style="padding:24px 4px">Search above for a route (like <b>60</b>) or a stop, then tap it to pin it here. Pins show up wherever you are.</div>';
+      || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it 📌</div>';
     $('#updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch { $('#updated').textContent = 'Offline: showing last data'; }
 }
@@ -278,10 +278,19 @@ async function planTrip() {
   try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&depart=${depart}`); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r) return ($('#trip').innerHTML = '<div class="empty">No route found. Try a different time or place.</div>');
-  const legs = r.legs.map((l, i) => `<div class="leg ${i ? '' : 'first'}">` + (l.type === 'walk'
-    ? `🚶 Walk ${l.mins} min${l.to ? ' to ' + esc(l.to) : ''}`
-    : `${badge(l.route, l.color)} ${esc(l.headsign)} ${l.live ? '<span class="live">● live</span>' : ''}<br>${clock(l.dep)} ${esc(l.from)} → ${clock(l.arr)} ${esc(l.to)} <span class="sched">${l.stops} stops</span>`) + '</div>').join('');
-  $('#trip').innerHTML = `<div class="card"><div class="summary">Arrive ${clock(r.arrive)}</div>${legs}${r.finalWalkMins ? `<div class="leg">🚶 Walk ${r.finalWalkMins} min to destination</div>` : ''}<div class="sched">● live = adjusted for current delays; otherwise scheduled times.</div></div>`;
+  // Timeline: clock time + stop name at each boarding/alighting, a coloured rail per bus ride, icons instead of sentences
+  const start = depart || Math.floor(Date.now() / 1000);
+  const rides = r.legs.filter((l) => l.type === 'ride');
+  const walk = r.legs.filter((l) => l.type === 'walk').reduce((n, l) => n + l.mins, 0) + (r.finalWalkMins || 0);
+  const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
+  const legs = r.legs.map((l) => l.type === 'walk'
+    ? `<div class="tw">🚶 ${l.mins} min</div>`
+    : `<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
+        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? '<span class="live">● live</span>' : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} 🚏</small></div>
+        ${stopRow(l.arr, l.to)}</div>`).join('');
+  $('#trip').innerHTML = `<div class="card"><div class="summary"><span>🕘 ${clock(start)}</span><span class="to">→</span><span>🏁 ${clock(r.arrive)}</span></div>
+    <div class="meta"><span>⏱ ${Math.round((r.arrive - start) / 60)} min</span>${rides.length > 1 ? `<span>🔁 ${rides.length - 1}</span>` : ''}<span>🚶 ${walk} min</span></div>
+    ${legs}${r.finalWalkMins ? `<div class="tw">🚶 ${r.finalWalkMins} min</div>` : ''}</div>`;
 }
 
 // ---------- map ----------
