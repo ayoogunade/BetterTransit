@@ -21,3 +21,9 @@ test('state survives a restart', () => {
   createSync(f).merge({ saved: { v: { home: 1 }, t: 5 } });
   assert.deepStrictEqual(createSync(f).merge().saved, { v: { home: 1 }, t: 5 });
 });
+
+test('the pinned-stop sort choice syncs between devices', () => {
+  const s = createSync(tmp());
+  s.merge({ stopSort: { v: 'next', t: 7 } });
+  assert.deepStrictEqual(s.merge().stopSort, { v: 'next', t: 7 });
+});

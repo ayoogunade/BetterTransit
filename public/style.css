@@ -213,3 +213,15 @@ header { align-items: center; }
 .card.open .morebtn span { display: none; }
 .card h2 .stopbell.on { color: var(--accent); background: var(--accent-soft); }
 .amins { font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); flex: none; }
+
+/* sorting pinned stops */
+.sorthead { display: flex; align-items: center; justify-content: space-between; }
+.sortbox { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; }
+.sortbox select { font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.sortbox button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; width: 30px; height: 28px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.sortbox button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sortbox button .ic { width: 16px; height: 16px; }
+.sg.reorder { cursor: default; }
+.sg.reorder button { border: 0; background: none; color: var(--accent); padding: 8px; display: flex; }
+.sg.reorder button:disabled { opacity: .25; }
+.sg.reorder button .ic { width: 22px; height: 22px; }

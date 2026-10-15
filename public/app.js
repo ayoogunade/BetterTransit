@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -289,6 +289,21 @@ function routeCard(r, buses) {
     ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">${icon('plus')} Pin stops on this route</button></div></div>`;
 }
 
+// Pinned stops can be shown in your own order (arrows in reorder mode), by next bus, or by name.
+// Both the sort choice and "My order" (the pins list itself) sync between devices.
+let pinLists = new Map(), pinBuses = [], reordering = false, stopSort = store.get('stopSort', 'mine');
+const SORTS = { mine: 'My order', next: 'Next bus', name: 'Name' };
+const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => routeOn(x.route) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
+const sortedPins = () => (stopSort === 'next' ? [...pins].sort((a, b) => nextTime(a) - nextTime(b)) : stopSort === 'name' ? [...pins].sort((a, b) => a.name.localeCompare(b.name)) : pins);
+const stopsHeader = () => `<div class="section-title sorthead"><span>Stops</span>${pins.length > 1 ? `<span class="sortbox">${stopSort === 'mine' ? `<button data-reorder class="${reordering ? 'on' : ''}" aria-label="Reorder stops">${icon('arrow-up-down')}</button>` : ''}<select id="stopsort" aria-label="Sort stops">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === stopSort ? 'selected' : ''}>${v}</option>`).join('')}</select></span>` : ''}</div>`;
+const reorderList = () => `<div class="card">${pins.map((p, i) => `<div class="sg reorder"><span class="t"><b>${esc(p.name)}</b></span>
+  <button data-move="${i}" data-dir="-1" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up')}</button><button data-move="${i}" data-dir="1" aria-label="Move down" ${i === pins.length - 1 ? 'disabled' : ''}>${icon('chevron-down')}</button></div>`).join('')}</div>`;
+
+function renderPins() {
+  $('#pins').innerHTML = (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, pinBuses)).join('') : '')
+    + (pins.length ? stopsHeader() + (reordering && stopSort === 'mine' ? reorderList() : sortedPins().map((p) => stopCard(p, pinLists.get(p.id) || [])).join('')) : '')
+    || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>';
+}
 async function refreshPins() {
   try {
     const [lists, buses] = await Promise.all([
@@ -296,9 +311,8 @@ async function refreshPins() {
       routePins.length ? api('/api/vehicles?routes=' + routePins.map((r) => encodeURIComponent(r.short)).join(',')) : [],
     ]);
     pinRoutes = new Set([...lists.flat().map((a) => a.route), ...routePins.map((r) => r.short)]);
-    $('#pins').innerHTML = (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, buses)).join('') : '')
-      + (pins.length ? '<div class="section-title">Stops</div>' + pins.map((p, i) => stopCard(p, lists[i])).join('') : '')
-      || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>';
+    pinLists = new Map(pins.map((p, i) => [p.id, lists[i]])); pinBuses = buses;
+    renderPins();
     $('#updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch { $('#updated').textContent = 'Offline: showing last data'; }
 }
@@ -374,6 +388,12 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
   const t = e.target.closest('button');
   if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
   if (t.classList.contains('bell')) return toggleWatch(t);
+  if (t.dataset.reorder !== undefined) { reordering = !reordering; return renderPins(); }
+  if (t.dataset.move) { // swap with the neighbour; no refetch, so it's instant
+    const i = +t.dataset.move, k = i + +t.dataset.dir;
+    if (k >= 0 && k < pins.length) { [pins[i], pins[k]] = [pins[k], pins[i]]; store.set('pins', pins); renderPins(); }
+    return;
+  }
   if (t.dataset.stopalert) return toggleStopAlert(t.dataset.stopalert);
   if (t.dataset.more) { const open = t.closest('.card').classList.toggle('open'); return open ? openStops.add(t.dataset.more) : openStops.delete(t.dataset.more); }
   if (t.dataset.locate !== undefined) return refreshNearby(true);
@@ -387,7 +407,9 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
   }
 };
 
-$('#pins').onchange = (e) => { const id = e.target.dataset.amins; if (!id) return; stopAlerts[id] = +e.target.value; store.set('stopAlerts', stopAlerts); syncStopAlerts([id]); };
+$('#pins').onchange = (e) => {
+  if (e.target.id === 'stopsort') { stopSort = e.target.value; store.set('stopSort', stopSort); reordering = false; return renderPins(); }
+  const id = e.target.dataset.amins; if (!id) return; stopAlerts[id] = +e.target.value; store.set('stopAlerts', stopAlerts); syncStopAlerts([id]); };
 syncStopAlerts();
 
 // ---------- plan ----------
