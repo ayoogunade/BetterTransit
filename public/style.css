@@ -16,9 +16,10 @@ main { padding: 4px 14px calc(88px + env(safe-area-inset-bottom)); max-width: 64
 /* bottom tab bar */
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); z-index: 1000; }
 .tabs button { flex: 1; border: 0; background: none; padding: 8px 0 7px; font-size: 11px; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 2px; min-height: 56px; }
-.tabs button i { font-style: normal; font-size: 22px; filter: grayscale(1); opacity: .7; }
+.tabs button i { display: flex; }
+.tabs button i .ic { width: 24px; height: 24px; }
 .tabs button.on { color: var(--accent); font-weight: 600; }
-.tabs button.on i { filter: none; opacity: 1; }
+.tabs button.on i .ic { stroke-width: 2.4; }
 
 /* inputs + search suggestions */
 input, select { font: inherit; color: var(--fg); }
@@ -126,3 +127,28 @@ body.noscroll { overflow: hidden; }
 .sheet-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--card); padding-bottom: env(safe-area-inset-bottom); }
 .sheet-list .mark { width: 36px; text-align: center; font-size: 22px; color: var(--accent); flex: none; }
 .sheet-list .mark.on { background: var(--accent); color: #fff; border-radius: 50%; font-size: 17px; width: 30px; height: 30px; line-height: 30px; margin-right: 3px; }
+
+/* lucide icons: inline SVG that inherits the text colour; 1em unless a context sets a size */
+.ic { width: 1em; height: 1em; vertical-align: -0.14em; flex: none; }
+.sbox .lead { position: absolute; left: 14px; top: 14px; z-index: 1; color: var(--muted); pointer-events: none; display: flex; }
+.sbox .lead .ic { width: 20px; height: 20px; }
+.sbox input[type=search] { padding-left: 42px; }
+.sg .ico { display: flex; justify-content: center; color: var(--accent); }
+.sg .ico .ic { width: 20px; height: 20px; }
+.sg .add .ic, .sheet-list .mark .ic { width: 22px; height: 22px; }
+.sheet-list .mark { display: flex; align-items: center; justify-content: center; }
+.sheet-list .mark.on .ic { width: 17px; height: 17px; stroke-width: 3; }
+.card h2 button .ic, .bell .ic { width: 20px; height: 20px; }
+.btn .ic { margin-right: 4px; }
+.dirarrow .ic { width: 18px; height: 18px; fill: currentColor; }
+.dirs button .ic { width: 14px; height: 14px; }
+.opt > i { display: flex; } .opt > i .ic { width: 18px; height: 18px; }
+.mapbar #locate .ic, #swap .ic { width: 20px; height: 20px; }
+.mapbar #locate, #swap { display: flex; align-items: center; justify-content: center; }
+.summary .ic { width: 22px; height: 22px; color: var(--muted); vertical-align: -0.2em; }
+.meta .ic, .tw .ic { width: 16px; height: 16px; margin-right: 2px; }
+.tb small .ic { width: 13px; height: 13px; vertical-align: -0.12em; }
+.sched .ic { width: 11px; height: 11px; vertical-align: -0.1em; }
+.live { display: inline-flex; align-items: center; gap: 5px; }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.leaflet-popup-content .ic { width: 14px; height: 14px; vertical-align: -0.15em; }

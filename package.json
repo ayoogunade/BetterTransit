@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test test/",
-    "start": "node server.js"
+    "start": "node server.js",
+    "icons": "node scripts/build-icons.js"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +17,8 @@
     "csv-parse": "^7.0.3",
     "gtfs-realtime-bindings": "^1.1.1",
     "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "lucide-static": "^1.57.0"
   }
 }

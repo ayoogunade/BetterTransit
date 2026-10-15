@@ -102,7 +102,7 @@ async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
   const out = new Map();
   for (const e of (await feed('TripUpdate/TripUpdates.pb')).entity) {
-    const tu = e.tripUpdate; if (!tu) continue;
+    const tu = e.tripUpdate; if (!tu || !trips[tu.trip.tripId]) continue; // skip ad-hoc trips with no route we can name
     for (const u of tu.stopTimeUpdate || []) {
       if (u.stopId !== stopId) continue;
       const time = Number((u.arrival || u.departure || {}).time || 0);

@@ -1,6 +1,6 @@
 // Offline fallback: last-good app files and API responses (network is always tried first).
 const SHELL = 'shell-v3';
-const FILES = ['/', '/app.js', '/style.css', '/manifest.json', '/favicon.svg'];
+const FILES = ['/', '/app.js', '/icons-data.js', '/style.css', '/manifest.json', '/favicon.svg'];
 self.addEventListener('install', (e) => e.waitUntil(caches.open(SHELL).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
 self.addEventListener('fetch', (e) => {

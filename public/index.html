@@ -17,16 +17,16 @@
 <header><h1>Better Transit</h1><span id="updated"></span></header>
 <main>
   <section id="pinned">
-    <div class="sbox"><input id="pin-search" type="search" placeholder="Search a route (60) or stop" autocomplete="off"><div class="suggest" id="pin-suggest"></div></div>
+    <div class="sbox"><i class="lead" data-icon="search"></i><input id="pin-search" type="search" placeholder="Search a route (60) or stop" autocomplete="off"><div class="suggest" id="pin-suggest"></div></div>
     <div id="pins"></div>
-    <label class="opt">🔔 Alert me <select id="mins"><option>3</option><option selected>5</option><option>10</option><option>15</option></select> min before a bus</label>
+    <label class="opt"><i data-icon="bell"></i> Alert me <select id="mins"><option>3</option><option selected>5</option><option>10</option><option>15</option></select> min before a bus</label>
   </section>
 
   <section id="plan" hidden>
     <div class="route-inputs">
-      <div class="sbox"><input id="from" type="search" placeholder="📍 From: place, stop or bus line" autocomplete="off"><div class="suggest" id="from-suggest"></div></div>
-      <button id="swap" title="Swap" aria-label="Swap from and to">⇅</button>
-      <div class="sbox"><input id="to" type="search" placeholder="🏁 To: place, stop or bus line" autocomplete="off"><div class="suggest" id="to-suggest"></div></div>
+      <div class="sbox"><i class="lead" data-icon="map-pin"></i><input id="from" type="search" placeholder="From: place, stop or bus line" autocomplete="off"><div class="suggest" id="from-suggest"></div></div>
+      <button id="swap" title="Swap" aria-label="Swap from and to"><i data-icon="arrow-up-down"></i></button>
+      <div class="sbox"><i class="lead" data-icon="flag"></i><input id="to" type="search" placeholder="To: place, stop or bus line" autocomplete="off"><div class="suggest" id="to-suggest"></div></div>
     </div>
     <div class="opt" id="leave"><button id="now" class="on">Leave now</button><button id="later">Later…</button><input type="datetime-local" id="when" hidden></div>
     <div id="trip"></div>
@@ -36,7 +36,7 @@
     <div class="mapbar">
       <div class="seg"><button data-mode="all">All</button><button data-mode="pins">My pins</button></div>
       <input id="maproute" type="search" inputmode="numeric" placeholder="Route #" autocomplete="off">
-      <button id="locate" title="My location" aria-label="My location">📍</button>
+      <button id="locate" title="My location" aria-label="My location"><i data-icon="locate-fixed"></i></button>
     </div>
     <div id="mapbox"></div>
   </section>
@@ -45,12 +45,13 @@
 </main>
 
 <nav class="tabs">
-  <button data-tab="pinned" class="on"><i>📌</i>Pinned</button>
-  <button data-tab="plan"><i>🧭</i>Plan</button>
-  <button data-tab="map"><i>🗺️</i>Map</button>
-  <button data-tab="alerts"><i>⚠️</i>Alerts</button>
+  <button data-tab="pinned" class="on"><i data-icon="pin"></i>Pinned</button>
+  <button data-tab="plan"><i data-icon="navigation"></i>Plan</button>
+  <button data-tab="map"><i data-icon="map"></i>Map</button>
+  <button data-tab="alerts"><i data-icon="triangle-alert"></i>Alerts</button>
 </nav>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="icons-data.js"></script>
 <script src="app.js"></script>
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
 </body>

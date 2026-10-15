@@ -8,6 +8,10 @@ const api = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(r.status); 
 const post = (p, body) => fetch(p, { method: 'POST', body: JSON.stringify(body) });
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (s) => parseInt(s, 10);
+// Lucide icons as inline SVG (paths generated into icons-data.js by `npm run icons`). They follow the text colour and size (1em).
+const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
+const hydrateIcons = (root = document) => root.querySelectorAll('[data-icon]').forEach((el) => { el.innerHTML = icon(el.dataset.icon); });
+hydrateIcons();
 const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const etaText = (t) => { const m = Math.round((t - Date.now() / 1000) / 60); return m <= 0 ? 'Due' : m + ' min'; };
 const badge = (short, color) => `<span class="badge" style="background:#${esc(color || '444')}">${esc(short)}</span>`;
@@ -31,7 +35,7 @@ function showTab(t) {
 $$('.tabs button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 
 // ---------- search box (shared by Pinned and Plan) ----------
-const ICON = { route: '🚌', stop: '🚏', dest: '🏁', place: '📍', here: '🎯', recent: '🕘' };
+const KIND_ICON = { route: () => icon('bus'), stop: () => icon('signpost'), dest: () => icon('flag'), place: () => icon('map-pin'), here: () => icon('crosshair'), recent: () => icon('history') };
 const titleOf = (it) => (it.kind === 'route' ? `Route ${it.short}` : it.kind === 'here' ? 'Use my location' : it.name);
 const subOf = (it) => (it.kind === 'route' ? it.long : it.sub);
 
@@ -42,7 +46,7 @@ function searchBox({ input, box, kinds, empty, onPick }) {
   let session = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()); // groups keystrokes for Google billing
   const render = (list) => {
     items = list;
-    box.innerHTML = list.map((it, i) => `<div class="sg" data-i="${i}"><span class="ico">${ICON[it.kind]}</span><span class="t"><b>${esc(titleOf(it))}</b><small>${esc(subOf(it))}</small></span>${onPick.pinsOnly ? '<span class="add">＋</span>' : ''}</div>`).join('');
+    box.innerHTML = list.map((it, i) => `<div class="sg" data-i="${i}"><span class="ico">${KIND_ICON[it.kind]()}</span><span class="t"><b>${esc(titleOf(it))}</b><small>${esc(subOf(it))}</small></span>${onPick.pinsOnly ? `<span class="add">${icon('plus')}</span>` : ''}</div>`).join('');
   };
   // Typing a number means a route/stop number, so those come first. Typing words usually means a place, so places lead and bus lines trail (max 2).
   const rank = (list, q) => {
@@ -106,13 +110,13 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
   // a stop may only exist in the other direction: say so, and let one tap switch there
   const otherMatches = () => '<div class="empty" style="padding:16px">No stops match in this direction.</div>' + dirs
     .map((d, k) => [k, d, d.stops.filter((st) => st.name.toLowerCase().includes(q)).length]).filter(([k, , n]) => k !== sel && n)
-    .map(([k, d, n]) => `<div class="sg" data-d="${k}"><span class="t"><b>${n} match${n > 1 ? 'es' : ''} going → ${esc(d.headsign)}</b><small>Tap to view</small></span></div>`).join('');
+    .map(([k, d, n]) => `<div class="sg" data-d="${k}"><span class="t"><b>${n} match${n > 1 ? 'es' : ''} going ${icon('arrow-right')} ${esc(d.headsign)}</b><small>Tap to view</small></span></div>`).join('');
   const rows = () => dirs[sel].stops.map((st, i) => ({ st, i })).filter(({ st }) => !q || st.name.toLowerCase().includes(q))
-    .map(({ st, i }) => `<div class="sg" data-s="${i}"><span class="ico">🚏</span><span class="t"><b>${esc(st.name)}</b><small>${esc(st.sub)}</small></span><span class="mark ${multi && isPinned(st) ? 'on' : ''}">${multi ? (isPinned(st) ? '✓' : '＋') : ''}</span></div>`).join('')
+    .map(({ st, i }) => `<div class="sg" data-s="${i}"><span class="ico">${icon('signpost')}</span><span class="t"><b>${esc(st.name)}</b><small>${esc(st.sub)}</small></span><span class="mark ${multi && isPinned(st) ? 'on' : ''}">${multi ? icon(isPinned(st) ? 'check' : 'plus') : ''}</span></div>`).join('')
     || otherMatches();
   const draw = () => {
     el.innerHTML = `<div class="sheet-bar"><div><b>Route ${esc(route.short)}</b><small>${esc(route.long || '')}${multi ? ' · tap stops to pin' : ' · choose a stop'}</small></div><button data-close class="done">Done</button></div>
-      <div class="dirs">${dirs.map((d, i) => `<button data-d="${i}" class="${i === sel ? 'on' : ''}">→ ${esc(d.headsign)} <small>(${d.stops.length})</small></button>`).join('')}</div>
+      <div class="dirs">${dirs.map((d, i) => `<button data-d="${i}" class="${i === sel ? 'on' : ''}">${icon('arrow-right')} ${esc(d.headsign)} <small>(${d.stops.length})</small></button>`).join('')}</div>
       <div class="sheet-filter"><input type="search" placeholder="Filter ${dirs[sel].stops.length} stops" value="${esc(q)}" autocomplete="off"></div>
       <div class="sheet-list">${rows()}</div>`;
     const input = el.querySelector('input');
@@ -129,7 +133,7 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
     if (!multi) { close(); return onStop(st); }
     onStop(st); // toggle the pin, then update just this row so the scroll position stays put
     const on = isPinned(st), mark = row.querySelector('.mark');
-    mark.textContent = on ? '✓' : '＋'; mark.classList.toggle('on', on);
+    mark.innerHTML = icon(on ? 'check' : 'plus'); mark.classList.toggle('on', on);
   };
 }
 
@@ -153,29 +157,29 @@ const watchKey = (stop, trip) => stop + '|' + trip;
 function stopCard(p, list) {
   const rows = list.length ? list.slice(0, 6).map((a, i) => `
     <div class="row ${i ? '' : 'first'}">
-      <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}">🔔</button>
+      <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}" aria-label="Alert me">${icon('bell')}</button>
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}</span>
-      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}${a.live ? '' : '<span class="sched">🕒 sched.</span>'}</span>
+      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}${a.live ? '' : `<span class="sched">${icon('clock')} sched.</span>`}</span>
     </div>`).join('') : '<div class="empty">No upcoming buses</div>';
-  return `<div class="card"><h2><span class="name">${esc(p.name)}</span><button data-unpin="${esc(p.id)}" aria-label="Unpin">✕</button></h2>${rows}</div>`;
+  return `<div class="card"><h2><span class="name">${esc(p.name)}</span><button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button></h2>${rows}</div>`;
 }
 
 function routeCard(r, buses) {
   const mine = buses.filter((b) => b.route === r.short);
   const groups = new Map();
   for (const b of mine) (groups.get(b.headsign) || groups.set(b.headsign, []).get(b.headsign)).push(b);
-  const body = groups.size ? [...groups].map(([hs, list]) => `<div class="dirhead">→ ${esc(hs)}</div>` + list
+  const body = groups.size ? [...groups].map(([hs, list]) => `<div class="dirhead">${icon('arrow-right')} ${esc(hs)}</div>` + list
     .sort((a, b) => (a.next ? a.next.time : Infinity) - (b.next ? b.next.time : Infinity)).slice(0, 5).map((b, i) => `
     <div class="row ${i ? '' : 'first'}">
-      <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing - 90}deg)">➤</span>
+      <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing}deg)">${icon('navigation-2')}</span>
       <span class="fleet">#${esc(b.label)}</span>
       <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}</span>
       <span class="eta">${b.next ? etaText(b.next.time) : ''}</span>
     </div>`).join('')).join('') : '<div class="empty">No buses in service right now</div>';
   return `<div class="card"><h2>${badge(r.short, r.color)}<span class="name">${esc(r.long)}</span>
-    <button data-maproute="${esc(r.short)}" aria-label="Show on map">🗺️</button><button data-unroute="${esc(r.short)}" aria-label="Unpin">✕</button></h2>
-    ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">＋ Pin stops on this route</button></div></div>`;
+    <button data-maproute="${esc(r.short)}" aria-label="Show on map">${icon('map')}</button><button data-unroute="${esc(r.short)}" aria-label="Unpin">${icon('x')}</button></h2>
+    ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">${icon('plus')} Pin stops on this route</button></div></div>`;
 }
 
 async function refreshPins() {
@@ -187,7 +191,7 @@ async function refreshPins() {
     pinRoutes = new Set([...lists.flat().map((a) => a.route), ...routePins.map((r) => r.short)]);
     $('#pins').innerHTML = (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, buses)).join('') : '')
       + (pins.length ? '<div class="section-title">Stops</div>' + pins.map((p, i) => stopCard(p, lists[i])).join('') : '')
-      || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it 📌</div>';
+      || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>';
     $('#updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch { $('#updated').textContent = 'Offline: showing last data'; }
 }
@@ -284,13 +288,13 @@ async function planTrip() {
   const walk = r.legs.filter((l) => l.type === 'walk').reduce((n, l) => n + l.mins, 0) + (r.finalWalkMins || 0);
   const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
   const legs = r.legs.map((l) => l.type === 'walk'
-    ? `<div class="tw">🚶 ${l.mins} min</div>`
+    ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
     : `<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
-        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? '<span class="live">● live</span>' : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} 🚏</small></div>
+        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live"><i></i>live</span>` : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small></div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
-  $('#trip').innerHTML = `<div class="card"><div class="summary"><span>🕘 ${clock(start)}</span><span class="to">→</span><span>🏁 ${clock(r.arrive)}</span></div>
-    <div class="meta"><span>⏱ ${Math.round((r.arrive - start) / 60)} min</span>${rides.length > 1 ? `<span>🔁 ${rides.length - 1}</span>` : ''}<span>🚶 ${walk} min</span></div>
-    ${legs}${r.finalWalkMins ? `<div class="tw">🚶 ${r.finalWalkMins} min</div>` : ''}</div>`;
+  $('#trip').innerHTML = `<div class="card"><div class="summary"><span>${icon('clock')} ${clock(start)}</span><span class="to">${icon('arrow-right')}</span><span>${icon('flag')} ${clock(r.arrive)}</span></div>
+    <div class="meta"><span>${icon('timer')} ${Math.round((r.arrive - start) / 60)} min</span>${rides.length > 1 ? `<span>${icon('repeat')} ${rides.length - 1}</span>` : ''}<span>${icon('footprints')} ${walk} min</span></div>
+    ${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}</div>`;
 }
 
 // ---------- map ----------
@@ -302,7 +306,7 @@ const busIcon = (b) => L.divIcon({
   className: '', iconSize: [52, 52], iconAnchor: [26, 26],
   html: `<div class="bus" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
 });
-const busPopup = (b) => `<b>Route ${esc(b.route)} → ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}`;
+const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}`;
 
 function syncSeg() { $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
 function initMap() {
