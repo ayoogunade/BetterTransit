@@ -38,7 +38,7 @@ const subOf = (it) => (it.kind === 'route' ? it.long : it.sub);
 // Typing shows matching routes, stops, bus destinations and (optionally) addresses/places.
 // onPick(item, ctx): ctx.close(), ctx.coords(item) -> item with lat/lon, ctx.drill(route, onStop) -> browse a route's stops
 function searchBox({ input, box, kinds, empty, onPick }) {
-  let items = [], seq = 0, timer, drilling = false;
+  let items = [], seq = 0, timer;
   let session = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()); // groups keystrokes for Google billing
   const render = (list) => {
     items = list;
@@ -54,7 +54,6 @@ function searchBox({ input, box, kinds, empty, onPick }) {
   const get = (k, q) => api(`/api/suggest?q=${encodeURIComponent(q)}&kinds=${k}&session=${session}`);
   // Routes/stops/destinations are instant, so show them first; addresses (a network call to Google) are appended when they arrive.
   const run = async () => {
-    drilling = false;
     const q = input.value.trim(), id = ++seq;
     if (!q) return render(empty ? empty() : []);
     let local = [];
@@ -72,11 +71,11 @@ function searchBox({ input, box, kinds, empty, onPick }) {
     if (id !== seq) return;
     local.length ? render(rank(local, q)) : (box.innerHTML = '<div class="empty" style="padding:12px">No matches</div>');
   };
-  const close = () => { seq++; drilling = false; box.innerHTML = ''; };
+  const close = () => { seq++; box.innerHTML = ''; };
   const ctx = {
     close,
     coords: async (it) => (it.lat != null || !it.placeId ? it : { ...it, ...(await api(`/api/place?id=${encodeURIComponent(it.placeId)}&session=${session}`)) }),
-    drill: (route, onStop) => { drilling = true; drawRouteStops(box, route, onStop, run); },
+    drill: (route, onStop) => openStopSheet(route, { onStop: (st) => { close(); onStop(st); } }),
   };
   const pick = async (it) => {
     await onPick(it, ctx);
@@ -85,38 +84,62 @@ function searchBox({ input, box, kinds, empty, onPick }) {
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 180); });
   input.addEventListener('focus', () => { document.body.classList.add('typing'); setTimeout(() => input.scrollIntoView({ block: 'start', behavior: 'smooth' }), 250); run(); });
   input.addEventListener('blur', () => setTimeout(() => document.body.classList.remove('typing'), 400));
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && items[0] && !drilling) { e.preventDefault(); pick(items[0]); } });
-  box.addEventListener('click', (e) => { const el = !drilling && e.target.closest('[data-i]'); if (el) pick(items[+el.dataset.i]); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && items[0]) { e.preventDefault(); pick(items[0]); } });
+  box.addEventListener('click', (e) => { const el = e.target.closest('[data-i]'); if (el) pick(items[+el.dataset.i]); });
   document.addEventListener('click', (e) => { if (!input.parentElement.contains(e.target)) close(); });
   return ctx;
 }
 
-// A route's stops, one tab per direction; used when you pick a bus line as a place or want to pin a stop on it
-async function drawRouteStops(el, route, onStop, onBack) {
-  el.innerHTML = '<div class="empty" style="padding:12px">Loading stops…</div>';
-  let dirs, sel = 0;
+// Full-screen list of every stop on a route (one tab per direction, with a filter box). One scroll area only, so it scrolls
+// reliably on iOS. multi: stays open so you can pin several stops (onStop toggles); otherwise picking a stop closes it.
+async function openStopSheet(route, { multi = false, isPinned = () => false, onStop }) {
+  const el = document.createElement('div');
+  el.className = 'sheet';
+  el.innerHTML = '<div class="sheet-bar"><b></b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading stops…</div>';
+  el.querySelector('b').textContent = `Route ${route.short}`;
+  document.body.append(el);
+  document.body.classList.add('noscroll');
+  const close = () => { el.remove(); document.body.classList.remove('noscroll'); };
+  let dirs, sel = 0, q = '';
   try { dirs = await api(`/api/route/${encodeURIComponent(route.short)}/stops`); }
-  catch { el.innerHTML = '<div class="empty" style="padding:12px">Could not load stops</div>'; return; }
+  catch { el.querySelector('.empty').textContent = 'Could not load stops. Check your connection.'; el.onclick = (e) => e.target.closest('[data-close]') && close(); return; }
+  // a stop may only exist in the other direction: say so, and let one tap switch there
+  const otherMatches = () => '<div class="empty" style="padding:16px">No stops match in this direction.</div>' + dirs
+    .map((d, k) => [k, d, d.stops.filter((st) => st.name.toLowerCase().includes(q)).length]).filter(([k, , n]) => k !== sel && n)
+    .map(([k, d, n]) => `<div class="sg" data-d="${k}"><span class="t"><b>${n} match${n > 1 ? 'es' : ''} going → ${esc(d.headsign)}</b><small>Tap to view</small></span></div>`).join('');
+  const rows = () => dirs[sel].stops.map((st, i) => ({ st, i })).filter(({ st }) => !q || st.name.toLowerCase().includes(q))
+    .map(({ st, i }) => `<div class="sg" data-s="${i}"><span class="ico">🚏</span><span class="t"><b>${esc(st.name)}</b><small>${esc(st.sub)}</small></span><span class="mark ${multi && isPinned(st) ? 'on' : ''}">${multi ? (isPinned(st) ? '✓' : '＋') : ''}</span></div>`).join('')
+    || otherMatches();
   const draw = () => {
-    el.innerHTML = `<div class="sg-head"><span>Route ${esc(route.short)}: choose a stop</span><button data-back>‹ Back</button></div>
-      <div class="dirs">${dirs.map((d, i) => `<button data-d="${i}" class="${i === sel ? 'on' : ''}">→ ${esc(d.headsign)}</button>`).join('')}</div>
-      <div class="rs-list">${dirs[sel].stops.map((s, i) => `<div class="sg" data-s="${i}"><span class="ico">🚏</span><span class="t"><b>${esc(s.name)}</b><small>${esc(s.sub)}</small></span></div>`).join('')}</div>`;
+    el.innerHTML = `<div class="sheet-bar"><div><b>Route ${esc(route.short)}</b><small>${esc(route.long || '')}${multi ? ' · tap stops to pin' : ' · choose a stop'}</small></div><button data-close class="done">Done</button></div>
+      <div class="dirs">${dirs.map((d, i) => `<button data-d="${i}" class="${i === sel ? 'on' : ''}">→ ${esc(d.headsign)} <small>(${d.stops.length})</small></button>`).join('')}</div>
+      <div class="sheet-filter"><input type="search" placeholder="Filter ${dirs[sel].stops.length} stops" value="${esc(q)}" autocomplete="off"></div>
+      <div class="sheet-list">${rows()}</div>`;
+    const input = el.querySelector('input');
+    input.oninput = () => { q = input.value.trim().toLowerCase(); el.querySelector('.sheet-list').innerHTML = rows(); };
   };
   draw();
   el.onclick = (e) => {
-    if (e.target.closest('[data-back]')) { el.onclick = null; return onBack(); }
+    if (e.target.closest('[data-close]')) return close();
     const d = e.target.closest('[data-d]');
-    if (d) { sel = +d.dataset.d; return draw(); }
-    const s = e.target.closest('[data-s]');
-    if (s) { el.onclick = null; onStop(dirs[sel].stops[+s.dataset.s]); }
+    if (d) { sel = +d.dataset.d; return draw(); } // the filter text carries over to the other direction
+    const row = e.target.closest('[data-s]');
+    if (!row) return;
+    const st = dirs[sel].stops[+row.dataset.s];
+    if (!multi) { close(); return onStop(st); }
+    onStop(st); // toggle the pin, then update just this row so the scroll position stays put
+    const on = isPinned(st), mark = row.querySelector('.mark');
+    mark.textContent = on ? '✓' : '＋'; mark.classList.toggle('on', on);
   };
 }
 
 // ---------- pinned ----------
-const addStopPin = (s) => {
-  if (!pins.some((p) => p.id === s.id)) pins.push({ id: s.id, name: s.name, lat: s.lat, lon: s.lon });
-  store.set('pins', pins); $('#pin-search').value = ''; refreshPins();
+const isStopPinned = (s) => pins.some((p) => p.id === s.id);
+const toggleStopPin = (s) => {
+  pins = isStopPinned(s) ? pins.filter((p) => p.id !== s.id) : [...pins, { id: s.id, name: s.name, lat: s.lat, lon: s.lon }];
+  store.set('pins', pins); refreshPins();
 };
+const addStopPin = (s) => { if (!isStopPinned(s)) toggleStopPin(s); $('#pin-search').value = ''; };
 const addRoutePin = (r) => {
   if (!routePins.some((p) => p.short === r.short)) routePins.push({ short: r.short, long: r.long, color: r.color });
   store.set('routePins', routePins); $('#pin-search').value = ''; refreshPins();
@@ -152,7 +175,7 @@ function routeCard(r, buses) {
     </div>`).join('')).join('') : '<div class="empty">No buses in service right now</div>';
   return `<div class="card"><h2>${badge(r.short, r.color)}<span class="name">${esc(r.long)}</span>
     <button data-maproute="${esc(r.short)}" aria-label="Show on map">🗺️</button><button data-unroute="${esc(r.short)}" aria-label="Unpin">✕</button></h2>
-    ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">＋ Pin a stop on this route</button></div></div>`;
+    ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">＋ Pin stops on this route</button></div></div>`;
 }
 
 async function refreshPins() {
@@ -200,8 +223,7 @@ $('#pins').onclick = (e) => {
   if (t.dataset.maproute) { showTab('map'); $('#maproute').value = t.dataset.maproute; fitNext = true; syncSeg(); return refreshMap(); }
   if (t.dataset.addstop) {
     const r = routePins.find((x) => x.short === t.dataset.addstop);
-    window.scrollTo(0, 0); $('#pin-search').value = '';
-    pinSearch.drill(r, (s) => { addStopPin(s); pinSearch.close(); });
+    openStopSheet(r, { multi: true, isPinned: isStopPinned, onStop: toggleStopPin });
   }
 };
 

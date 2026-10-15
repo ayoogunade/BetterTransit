@@ -36,12 +36,9 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .sg .t b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg .t small { display: block; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg .add { color: var(--accent); font-size: 22px; flex: none; }
-.sg-head { padding: 10px 12px; font-size: 13px; color: var(--muted); background: var(--bg); display: flex; justify-content: space-between; align-items: center; }
-.sg-head button { border: 0; background: none; color: var(--accent); font-weight: 600; padding: 4px; }
 .dirs { display: flex; gap: 6px; padding: 8px 10px; overflow-x: auto; border-bottom: 1px solid var(--line); }
 .dirs button { flex: none; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
 .dirs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.rs-list { max-height: 40vh; overflow-y: auto; }
 .empty { color: var(--muted); padding: 10px 2px; font-size: 14px; }
 .opt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 14px; margin: 10px 2px; }
 .opt select, .opt input[type=datetime-local] { width: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); box-shadow: none; font-size: 14px; }
@@ -105,3 +102,18 @@ input[type=datetime-local] { appearance: auto; -webkit-appearance: auto; min-wid
 .opt button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 /* leave room under the content so results can scroll up above the on-screen keyboard */
 body.typing main { padding-bottom: 60vh; }
+
+/* full-screen stop picker: a single scroll area (the list), so it scrolls reliably on iOS */
+body.noscroll { overflow: hidden; }
+.sheet { position: fixed; inset: 0; z-index: 3000; display: flex; flex-direction: column; background: var(--bg); padding-top: env(safe-area-inset-top); }
+.sheet-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; background: var(--card); border-bottom: 1px solid var(--line); }
+.sheet-bar b { display: block; font-size: 18px; }
+.sheet-bar small { display: block; color: var(--muted); font-size: 13px; }
+.sheet-bar .done { border: 0; background: var(--accent); color: #fff; border-radius: 10px; padding: 10px 18px; font-weight: 600; flex: none; }
+.sheet .dirs { background: var(--card); flex: none; }
+.dirs button small { color: inherit; opacity: .7; }
+.sheet-filter { padding: 8px 14px; flex: none; }
+.sheet-filter input { margin: 0; }
+.sheet-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: var(--card); padding-bottom: env(safe-area-inset-bottom); }
+.sheet-list .mark { width: 36px; text-align: center; font-size: 22px; color: var(--accent); flex: none; }
+.sheet-list .mark.on { background: var(--accent); color: #fff; border-radius: 50%; font-size: 17px; width: 30px; height: 30px; line-height: 30px; margin-right: 3px; }

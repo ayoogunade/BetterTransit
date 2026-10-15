@@ -116,18 +116,34 @@ module.exports = function createSearch(data) {
     return [...local, ...(await placeP)];
   }
 
-  // ordered stops per direction (headsign) for a route, using the longest trip of each direction
+  // Every stop on a route, per direction. Trips are grouped by direction_id; a few trips per route are short variants
+  // (e.g. ending at a terminal), so each direction merges the stop sequences of ALL its trip variants, keeping order.
   function routeStops(short) {
     const d = index();
     const ids = new Set(Object.values(d.routes).filter((r) => r.route_short_name === short || num(r.route_short_name) === num(short)).map((r) => r.route_id));
-    const best = new Map();
+    const dirs = new Map();
     for (const [tid, t] of Object.entries(d.trips)) {
-      if (!ids.has(t.route_id)) continue;
-      const n = (d.tripStops[tid] || []).length;
-      if (n > (best.get(t.trip_headsign)?.n || 0)) best.set(t.trip_headsign, { n, tid });
+      if (!ids.has(t.route_id) || !(d.tripStops[tid] || []).length) continue;
+      const key = t.direction_id ?? t.trip_headsign;
+      if (!dirs.has(key)) dirs.set(key, { trips: [], heads: new Map() });
+      const g = dirs.get(key);
+      g.trips.push(tid);
+      g.heads.set(t.trip_headsign, (g.heads.get(t.trip_headsign) || 0) + 1);
     }
     const byId = Object.fromEntries(d.stops.map((s) => [s.stop_id, s]));
-    return [...best].map(([headsign, { tid }]) => ({ headsign, stops: d.tripStops[tid].map((s) => stopItem(byId[s.stop])) }));
+    return [...dirs.values()].map((g) => {
+      const seqs = [...new Map(g.trips.map((tid) => d.tripStops[tid].map((s) => s.stop)).map((q) => [q.join('>'), q])).values()].sort((a, b) => b.length - a.length);
+      const merged = [...seqs[0]];
+      for (const seq of seqs.slice(1)) { // slot each variant's extra stops in after the stop that precedes them
+        let last = -1;
+        for (const stop of seq) {
+          const i = merged.indexOf(stop);
+          if (i >= 0) last = i; else merged.splice(++last, 0, stop);
+        }
+      }
+      const headsign = [...g.heads].sort((a, b) => b[1] - a[1]).find(([h]) => h)?.[0] || '';
+      return { headsign, trips: g.trips.length, stops: merged.filter((id) => byId[id]).map((id) => stopItem(byId[id])) };
+    }).sort((a, b) => b.trips - a.trips);
   }
 
   return { suggest, placeLatLon, routeStops, routeList: () => (index(), routeList) };
