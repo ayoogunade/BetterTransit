@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Better Transit</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0a7d3c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><h1>Better Transit</h1><span id="updated"></span></header>
+<nav>
+  <button data-tab="pinned" class="on">Pinned</button>
+  <button data-tab="plan">Plan</button>
+  <button data-tab="map">Map</button>
+  <button data-tab="alerts">Alerts</button>
+</nav>
+<main>
+  <section id="pinned">
+    <label class="when">Notify me when a bus is <select id="mins"><option>3</option><option selected>5</option><option>10</option><option>15</option></select> min away (tap 🔔)</label>
+    <div id="pins"></div>
+    <input id="search" placeholder="Add a stop: name or stop number" autocomplete="off">
+    <div id="results"></div>
+  </section>
+  <section id="plan" hidden>
+    <div class="place"><input id="from" placeholder="From (address or place)" autocomplete="off"><button id="here">📍</button></div>
+    <div class="results" id="from-results"></div>
+    <div class="place"><input id="to" placeholder="To (address or place)" autocomplete="off"></div>
+    <div class="results" id="to-results"></div>
+    <label class="when">Leave <input type="datetime-local" id="when"> <button id="now">Now</button></label>
+    <div id="trip"></div>
+  </section>
+  <section id="map" hidden>
+    <label class="when"><input type="checkbox" id="mine" style="width:auto;margin:0"> Only buses on my pinned stops' routes</label>
+    <div id="mapbox"></div>
+  </section>
+  <section id="alerts" hidden></section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
+</body>
+</html>

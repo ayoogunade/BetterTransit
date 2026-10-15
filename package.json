@@ -1,0 +1,20 @@
+{
+  "name": "better-transit",
+  "version": "1.0.0",
+  "description": "Personal Saskatoon transit app using the city's GTFS-realtime feeds",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test/",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "csv-parse": "^7.0.3",
+    "gtfs-realtime-bindings": "^1.1.1",
+    "web-push": "^3.6.7"
+  }
+}
