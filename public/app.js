@@ -47,7 +47,7 @@ const toast = (msg, action, onAction) => {
   el.innerHTML = `<span>${esc(msg)}</span>${action ? `<button>${esc(action)}</button>` : ''}`;
   if (action) el.querySelector('button').onclick = () => { el.classList.remove('on'); onAction(); };
   el.classList.add('on');
-  clearTimeout(snackTimer); snackTimer = setTimeout(() => el.classList.remove('on'), action ? 5000 : 3000);
+  clearTimeout(snackTimer); snackTimer = setTimeout(() => el.classList.remove('on'), action ? 8000 : 3000);
 };
 const WALK_MPS = 1.2; // same walking speed as the planner
 const walkMins = (m) => Math.max(1, Math.round(m / WALK_MPS / 60));
@@ -389,7 +389,10 @@ async function refreshNearby(ask = false) {
 
 // Push subscription for this device. create: ask permission and subscribe if there isn't one yet. Returns null (with a toast) if unavailable.
 async function getSub(create) {
-  if (!('serviceWorker' in navigator && 'PushManager' in window)) { toast('Notifications need HTTPS or localhost'); return null; }
+  if (!('serviceWorker' in navigator && 'PushManager' in window)) { // only say so when you asked for one, not on background syncs
+    if (create) toast(/iPhone|iPad/.test(navigator.userAgent) ? 'Add to Home Screen to get notifications' : 'Notifications need HTTPS or localhost');
+    return null;
+  }
   const reg = await navigator.serviceWorker.ready;
   const sub = await reg.pushManager.getSubscription();
   if (sub || !create) return sub;
@@ -583,8 +586,8 @@ let leaveMode = 'now';
 const setLeave = (mode) => {
   leaveMode = mode;
   $$('#leave [data-when]').forEach((b) => b.classList.toggle('on', b.dataset.when === mode)); $('#when').hidden = mode === 'now';
-  if (mode !== 'now' && !$('#when').value) { // default to the next half hour, in local time
-    const d = new Date(Math.ceil((Date.now() + 60000) / 1800000) * 1800000);
+  if (mode !== 'now' && !$('#when').value) { // default to the next half hour (arrive by: the one after, so there's time to get there), in local time
+    const d = new Date(Math.ceil((Date.now() + (mode === 'arrive' ? 1800000 : 0) + 60000) / 1800000) * 1800000);
     $('#when').value = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   }
   if (mode === 'now') $('#when').value = '';
@@ -599,7 +602,7 @@ async function planTrip() {
   let r;
   try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}`); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
-  if (!r || !r.length) return ($('#trip').innerHTML = '<div class="empty">No route found. Try a different time or place.</div>');
+  if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
   trips = r;
   $('#trip').innerHTML = r.map((o, i) => tripCard(o, i)).join('');
 }
