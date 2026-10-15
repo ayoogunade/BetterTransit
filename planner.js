@@ -111,9 +111,9 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
 
   // The next few itineraries: after each one, plan again from just after its first boarding so the following bus/connection is found.
   // An option that arrives no later than the previous one but leaves later replaces it. Each has `leave` (seconds, when to set out).
-  plan.options = (from, to, dep, services, live, n = 4) => {
+  plan.options = (from, to, dep, services, live, n = 4, until = dep + 3 * 3600) => {
     const out = [];
-    for (let t = dep; out.length < n && t < dep + 3 * 3600;) {
+    for (let t = dep; out.length < n && t < until;) {
       const r = plan(from, to, t, services, live);
       if (!r) break;
       const ride = r.legs.find((l) => l.type === 'ride');
@@ -125,5 +125,9 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
     }
     return out;
   };
+  // "Arrive by": options leaving from `earliest` (default 2 h before; pass now so nothing already gone shows) that still get there
+  // in time, latest departure first (that's the one you want).
+  plan.arriveBy = (from, to, by, services, live, earliest = by - 2 * 3600, n = 3) =>
+    plan.options(from, to, Math.max(earliest, by - 2 * 3600), services, live, 12, by).filter((r) => r.arrive <= by).slice(-n).reverse();
   return plan;
 };

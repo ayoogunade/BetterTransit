@@ -55,6 +55,18 @@ test('options lists the next departures, each leaving later and arriving later',
   assert.ok(opts[0].leave >= 3500 && opts[1].leave > opts[0].leave && opts[1].arrive > opts[0].arrive);
 });
 
+test('arriveBy lists only options that make it in time, latest departure first', () => {
+  const trip = (o) => o.legs.find((l) => l.type === 'ride').trip;
+  assert.deepStrictEqual(plan.arriveBy(at(52.0), at(52.02), 4800, services).map(trip), ['t2', 't1']);
+  assert.deepStrictEqual(plan.arriveBy(at(52.0), at(52.02), 4500, services).map(trip), ['t1']);
+  assert.deepStrictEqual(plan.arriveBy(at(52.0), at(52.02), 4000, services), []);
+  assert.deepStrictEqual(plan.arriveBy(at(52.0), at(52.02), 4800, services, undefined, 3700).map(trip), ['t2']); // t1 already left
+});
+
+test('arriveBy never starts before now', () => {
+  assert.deepStrictEqual(plan.arriveBy(at(52.0), at(52.02), 4800, services, undefined, 4300), []);
+});
+
 test('options is empty when there is no route', () => {
   assert.deepStrictEqual(plan.options(at(52.0), at(50.0), 3500, services), []);
 });

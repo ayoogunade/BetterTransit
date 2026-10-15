@@ -226,7 +226,8 @@ function routeMap(short) {
 }
 
 // ---------- trip planner / geocoding ----------
-const nameOf = (id) => (stops.find((s) => s.stop_id === id) || {}).stop_name || id;
+const stopOf = (id) => stops.find((s) => s.stop_id === id) || { stop_id: id, stop_name: id };
+const nameOf = (id) => stopOf(id).stop_name;
 // tripId -> adjusted stop times (seconds since service-day midnight) from the realtime feed; null = cancelled
 async function liveTimes() {
   const out = new Map();
@@ -254,20 +255,23 @@ const realTime = (t, near) => {
   return [mid + t, mid + t - 86400, mid + t + 86400].sort((a, b) => Math.abs(a - near) - Math.abs(b - near))[0];
 };
 
-async function planTrip(from, to, departAt) {
+async function planTrip(from, to, departAt, arriveBy = 0) {
   const now = Math.floor(Date.now() / 1000);
-  const when = departAt && departAt > now ? departAt : now;
+  const when = arriveBy ? Math.max(now, arriveBy - 2 * 3600) : departAt && departAt > now ? departAt : now;
   const localMidnight = Math.floor((when + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const services = activeServices(new Date((when + TZ_OFFSET_SEC) * 1000));
   const live = when - now < 2 * 3600 ? await liveTimes() : new Map(); // delays only matter for near-term trips
   const abs = (t) => localMidnight + t;
-  return plan.options(from, to, when - localMidnight, services, live).map((r) => ({
+  const opts = arriveBy ? plan.arriveBy(from, to, arriveBy - localMidnight, services, live, when - localMidnight) : plan.options(from, to, when - localMidnight, services, live);
+  return opts.map((r) => ({
     leave: abs(r.leave),
     arrive: abs(r.arrive),
     legs: r.legs.map((l) => {
       if (l.type === 'walk') return { type: 'walk', mins: Math.max(1, Math.round(l.secs / 60)), to: l.to ? nameOf(l.to) : null };
       const t = trips[l.trip], rt = routes[t.route_id] || {};
-      return { type: 'ride', live: l.live, route: rt.route_short_name, color: rt.route_color, headsign: t.trip_headsign, from: nameOf(l.stops[l.from]), to: nameOf(l.stops[l.to]), dep: abs(l.times[l.from]), arr: abs(l.times[l.to]), stops: l.to - l.from };
+      const b = stopOf(l.stops[l.from]); // boarding stop, so the app can pin it or set an alert for this bus there
+      return { type: 'ride', live: l.live, trip: l.trip, route: rt.route_short_name, color: rt.route_color, headsign: t.trip_headsign, from: nameOf(l.stops[l.from]), to: nameOf(l.stops[l.to]), dep: abs(l.times[l.from]), arr: abs(l.times[l.to]), stops: l.to - l.from,
+        board: { id: b.stop_id, name: b.stop_name, lat: +b.stop_lat, lon: +b.stop_lon } };
     }),
     finalWalkMins: Math.round(r.finalWalk / 60),
   }));
@@ -313,7 +317,7 @@ const server = http.createServer(async (req, res) => {
     if ((m = p.match(/^\/api\/route\/(.+)\/stops$/))) return json(res, search.routeStops(decodeURIComponent(m[1])));
     if (p === '/api/plan') {
       const ll = (k) => { const [lat, lon] = (u.searchParams.get(k) || '').split(',').map(Number); return { lat, lon }; };
-      return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0));
+      return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0, +u.searchParams.get('arrive') || 0));
     }
     if (p === '/api/alerts') return json(res, await alerts());
     if (p === '/api/routemap') return json(res, Object.fromEntries((u.searchParams.get('routes') || '').split(',').filter(Boolean).slice(0, 80).map((r) => [r, routeMap(r)])), 200, req);

@@ -14,9 +14,10 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><h1>Better Transit</h1><div class="hdr-r"><span id="updated"></span><button id="routes-btn" aria-label="Choose which routes to show"><i data-icon="sliders-horizontal"></i></button></div></header>
+<header><h1>Better Transit</h1><div class="hdr-r"><button id="updated" aria-label="Refresh"></button><button id="routes-btn" aria-label="Choose which routes to show"><i data-icon="sliders-horizontal"></i></button></div></header>
 <main>
   <section id="pinned">
+    <div id="ptr" aria-hidden="true"><i data-icon="refresh-cw"></i></div>
     <div class="sbox"><i class="lead" data-icon="search"></i><input id="pin-search" type="search" placeholder="Search a route (60) or stop" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="suggest" id="pin-suggest"></div></div>
     <div id="pins"></div>
     <div id="nearby"></div>
@@ -29,7 +30,7 @@
       <button id="swap" title="Swap" aria-label="Swap from and to"><i data-icon="arrow-up-down"></i></button>
       <div class="sbox"><i class="lead" data-icon="flag"></i><input id="to" type="search" placeholder="To: place, stop or bus line" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="suggest" id="to-suggest"></div></div>
     </div>
-    <div class="opt" id="leave"><button id="now" class="on">Leave now</button><button id="later">Later…</button><input type="datetime-local" id="when" hidden></div>
+    <div class="opt" id="leave"><button data-when="now" class="on">Leave now</button><button data-when="depart">Depart at</button><button data-when="arrive">Arrive by</button><input type="datetime-local" id="when" hidden></div>
     <div id="trip"></div>
   </section>
 
@@ -49,8 +50,9 @@
   <button data-tab="pinned" class="on"><i data-icon="pin"></i>Pinned</button>
   <button data-tab="plan"><i data-icon="navigation"></i>Plan</button>
   <button data-tab="map"><i data-icon="map"></i>Map</button>
-  <button data-tab="alerts"><i data-icon="triangle-alert"></i>Alerts</button>
+  <button data-tab="alerts"><i data-icon="triangle-alert"></i><span id="alert-badge" class="tabbadge"></span>Alerts</button>
 </nav>
+<div id="snack" role="status" aria-live="polite"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="icons-data.js"></script>
 <script src="app.js"></script>
