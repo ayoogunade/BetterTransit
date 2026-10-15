@@ -31,7 +31,7 @@ module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
     for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip];
     for (const a of list) {
       if (w.routes && !w.routes.includes(a.route)) continue;
-      if (a.cancelled || a.skipped || a.gone) continue; // not coming to this stop
+      if (a.cancelled || a.skipped || a.gone || a.ends) continue; // not coming, or not boardable here
       if (w.sent[a.trip] || a.time - now > w.minutes * 60 || a.time < now - 60) continue;
       w.sent[a.trip] = now;
       const mins = Math.max(0, Math.round((a.time - now) / 60));

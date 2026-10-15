@@ -70,7 +70,8 @@ function tick() {
 }
 setInterval(tick, 5000);
 const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
-const here = () => new Promise((ok, no) => navigator.geolocation.getCurrentPosition((p) => ok({ lat: p.coords.latitude, lon: p.coords.longitude }), no, { enableHighAccuracy: true, timeout: 10000 }));
+// a fix up to a minute old is fine (this runs every 20s); the long timeout covers someone taking a while to answer the permission prompt
+const here = () => new Promise((ok, no) => navigator.geolocation.getCurrentPosition((p) => ok({ lat: p.coords.latitude, lon: p.coords.longitude }), no, { enableHighAccuracy: true, timeout: 30000, maximumAge: 60000 }));
 
 let pins = store.get('pins', []);            // stops: {id, name, lat, lon}. Shown everywhere, regardless of location
 let routePins = store.get('routePins', []);  // routes: {short, long, color}
@@ -301,14 +302,16 @@ const openStops = new Set(); // pinned stop cards the user has expanded (kept ac
 const ALERT_MINS = [3, 5, 10, 15];
 // How sure we are about a bus, in words: cancelled / detour / just left / signal lost / not tracked, else stops away and late/early/on time
 const isComing = (a) => !a.cancelled && !a.skipped && !a.gone;
+const canBoard = (a) => isComing(a) && !a.ends; // a trip ending at this stop only drops off
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
   if (a.skipped) return '<em class="bad">Not stopping here (detour)</em>';
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
-  if (!a.tracked) return 'Not tracked yet · timetable time';
+  const ends = a.ends ? 'Drop-off only' : '';
+  if (!a.tracked) return [ends, 'Not tracked yet'].filter(Boolean).join(' · ') || 'Not tracked yet · timetable time';
   const d = Math.round((a.delay || 0) / 60);
-  return [a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
+  return [ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time'].filter(Boolean).join(' · ');
 }
 const arrivalEta = (a) => (!isComing(a)
@@ -320,7 +323,7 @@ let myPos = null;
 const metres = (a, b) => Math.hypot((a.lat - b.lat) * 111200, (a.lon - b.lon) * 111200 * Math.cos((a.lat * Math.PI) / 180));
 function catchLine(p, list, dist) {
   if (dist == null || dist > 1500) return '';
-  const walk = walkMins(dist), now = Date.now() / 1000, a = list.find((x) => isComing(x) && x.time - walk * 60 - 60 >= now); // a minute to spare
+  const walk = walkMins(dist), now = Date.now() / 1000, a = list.find((x) => canBoard(x) && x.time - walk * 60 - 60 >= now); // a minute to spare
   if (!a) return '';
   const at = a.time - walk * 60 - 60;
   return `<div class="catch">${icon('footprints')} ${walk} min walk · <b data-leavein="${at}">${leaveText(at)}</b> for the ${esc(a.route)} at ${clock(a.time)}</div>`;
@@ -330,14 +333,14 @@ function stopCard(p, list, nearby = false) {
   list = list.filter((a) => routeOn(a.route));
   list = [...list.filter((a) => !a.gone), ...list.filter((a) => a.gone)]; // a bus that just left goes last, so the next one leads
   const items = list.slice(0, nearby ? 4 : 6).map((a, i) => `
-    <div class="row ${i ? '' : 'first'} ${isComing(a) ? '' : 'off'}" role="button" tabindex="0" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
+    <div class="row ${i ? '' : 'first'} ${isComing(a) ? '' : 'off'} ${a.ends ? 'dropoff' : ''}" role="button" tabindex="0" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}<small>${statusOf(a)}</small></span>
       ${watching.has(watchKey(p.id, a.trip)) ? `<span class="watched" role="img" aria-label="Alert set">${icon('bell')}</span>` : ''}
       ${arrivalEta(a)}
     </div>`);
-  // pinned stops show the next bus that's actually coming (and any cancelled one before it); the rest sit behind a chevron
-  const lead = Math.max(1, list.slice(0, items.length).findIndex(isComing) + 1);
+  // pinned stops show the next bus you can board (and any cancelled / drop-off one before it); the rest sit behind a chevron
+  const lead = Math.max(1, list.slice(0, items.length).findIndex(canBoard) + 1);
   const rows = !items.length ? `<div class="empty">No upcoming buses${shown ? ' on your routes' : ''}</div>`
     : nearby || items.length <= lead ? items.join('')
     : items.slice(0, lead).join('') + `<div class="more">${items.slice(lead).join('')}</div><button class="morebtn" data-more="${esc(p.id)}">${icon('chevron-down')} <span>${items.length - lead} more</span></button>`;
@@ -354,7 +357,8 @@ function routeCard(r, buses) {
   const mine = buses.filter((b) => b.route === r.short);
   const groups = new Map();
   for (const b of mine) (groups.get(b.headsign) || groups.set(b.headsign, []).get(b.headsign)).push(b);
-  const body = groups.size ? [...groups].map(([hs, list]) => `<div class="dirhead">${icon('arrow-right')} ${esc(hs)}</div>` + list
+  // a bus on a trip that isn't in the timetable has no destination to show
+  const body = groups.size ? [...groups].map(([hs, list]) => `<div class="dirhead">${hs ? `${icon('arrow-right')} ${esc(hs)}` : 'Destination not given'}</div>` + list
     .sort((a, b) => (a.next ? a.next.time : Infinity) - (b.next ? b.next.time : Infinity)).slice(0, 5).map((b, i) => {
       const age = b.age == null ? '' : `<span class="sched" title="Position updated ${ageText(b.age)} ago">${icon('radio')} ${ageText(b.age)}</span>`;
       return `
@@ -373,7 +377,7 @@ function routeCard(r, buses) {
 // Both the sort choice and "My order" (the pins list itself) sync between devices.
 let pinLists = new Map(), pinBuses = [], reordering = false, stopSort = store.get('stopSort', 'mine');
 const SORTS = { mine: 'My order', next: 'Next bus', name: 'Name' };
-const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => routeOn(x.route) && isComing(x) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
+const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => routeOn(x.route) && canBoard(x) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
 const sortedPins = () => (stopSort === 'next' ? [...pins].sort((a, b) => nextTime(a) - nextTime(b)) : stopSort === 'name' ? [...pins].sort((a, b) => a.name.localeCompare(b.name)) : pins);
 const stopsHeader = () => `<div class="section-title sorthead"><span>Stops</span>${pins.length > 1 ? `<span class="sortbox">${stopSort === 'mine' ? `<button data-reorder class="${reordering ? 'on' : ''}" aria-label="Reorder stops">${icon('arrow-up-down')}</button>` : ''}<select id="stopsort" aria-label="Sort stops">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === stopSort ? 'selected' : ''}>${v}</option>`).join('')}</select></span>` : ''}</div>`;
 const reorderList = () => `<div class="card">${pins.map((p, i) => `<div class="sg reorder"><span class="t"><b>${esc(p.name)}</b></span>
@@ -410,7 +414,7 @@ async function refreshNearby(ask = false) {
   if (!nearbyData) $('#nearby').innerHTML = '<div class="section-title">Near you</div>' + skeleton(2);
   try {
     const me = await here();
-    myPos = me;
+    myPos = me; renderPins(); // pinned cards can now say when to leave (no refetch)
     nearbyData = shown && !shown.length ? [] : await api(`/api/nearby?lat=${me.lat}&lon=${me.lon}${shown ? '&routes=' + shown.map(encodeURIComponent).join(',') : ''}`);
   }
   catch { if (ask) toast('Location unavailable'); }

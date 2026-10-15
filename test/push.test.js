@@ -95,3 +95,11 @@ test('standing watches ignore cancelled, skipped and departed buses', async () =
   await push.check();
   assert.strictEqual(sent.length, 0);
 });
+
+test('standing watches skip buses whose trip ends at the stop', async () => {
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [{ trip: 'E', route: '60', time: now() + 60, ends: true }], checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'e5' }, stopId: 'S5', standing: true, routes: null, minutes: 5, stopName: 'X' });
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+});

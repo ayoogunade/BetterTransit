@@ -301,6 +301,7 @@ header { align-items: center; }
 .hs small .early { color: var(--warn); font-weight: 600; }
 .row.off .badge, .row.off .hs > :not(small) { opacity: .55; }
 .row.off { color: var(--muted); }
+.row.dropoff .badge, .row.dropoff .hs > :not(small), .row.dropoff .eta .n { opacity: .55; } /* can't board it here */
 .eta.off { color: var(--muted); font-size: 15px; font-weight: 600; }
 .eta.muted .n { color: var(--muted); }
 .eta.muted.soon .n { background: var(--line); }
