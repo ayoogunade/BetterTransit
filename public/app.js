@@ -166,7 +166,7 @@ async function openTripSheet(tripId, stopId) {
 let shown = store.get('shownRoutes', null), allRoutes = null;
 const routeOn = (short) => !shown || shown.includes(short);
 function applyRouteFilter() {
-  syncSeg(); refreshPins(); refreshNearby();
+  syncSeg(); refreshPins(); refreshNearby(); syncStopAlerts();
   if (map) refreshMap();
   if (!$('#alerts').hidden) refreshAlerts();
 }
@@ -224,19 +224,26 @@ const pinSearch = searchBox({
 });
 
 const watchKey = (stop, trip) => stop + '|' + trip;
+const openStops = new Set(); // pinned stop cards the user has expanded (kept across the 20s refresh)
+const ALERT_MINS = [3, 5, 10, 15];
 function stopCard(p, list, nearby = false) {
   list = list.filter((a) => routeOn(a.route));
-  const rows = list.length ? list.slice(0, nearby ? 4 : 6).map((a, i) => `
+  const items = list.slice(0, nearby ? 4 : 6).map((a, i) => `
     <div class="row ${i ? '' : 'first'}" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}" aria-label="Alert me">${icon('bell')}</button>
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}</span>
       <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}<span class="sched">${clock(a.time)}${a.live ? '' : ` · ${icon('clock')} sched.`}</span></span>
-    </div>`).join('') : `<div class="empty">No upcoming buses${shown ? ' on your routes' : ''}</div>`;
+    </div>`);
+  // pinned stops show only the next bus; the rest sit behind a chevron
+  const rows = !items.length ? `<div class="empty">No upcoming buses${shown ? ' on your routes' : ''}</div>`
+    : nearby || items.length === 1 ? items.join('')
+    : items[0] + `<div class="more">${items.slice(1).join('')}</div><button class="morebtn" data-more="${esc(p.id)}">${icon('chevron-down')} <span>${items.length - 1} more</span></button>`;
+  const mins = stopAlerts[p.id];
   const act = nearby
     ? `<small class="dist">${p.dist} m</small><button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
-    : `<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
-  return `<div class="card"><h2><span class="name">${esc(p.name)}</span>${act}</h2>${rows}</div>`;
+    : `${mins ? `<select class="amins" data-amins="${esc(p.id)}" aria-label="Minutes before a bus">${ALERT_MINS.map((n) => `<option ${n === mins ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="dist">min</small>` : ''}<button class="stopbell ${mins ? 'on' : ''}" data-stopalert="${esc(p.id)}" aria-label="${mins ? 'Stop alerts for' : 'Alert me about every bus at'} ${esc(p.name)}">${icon('bell')}</button><button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
+  return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2><span class="name">${esc(p.name)}</span>${act}</h2>${rows}</div>`;
 }
 
 function routeCard(r, buses) {
@@ -287,36 +294,58 @@ async function refreshNearby(ask = false) {
   renderNearby();
 }
 
+// Push subscription for this device. create: ask permission and subscribe if there isn't one yet. Returns null (with a toast) if unavailable.
+async function getSub(create) {
+  if (!('serviceWorker' in navigator && 'PushManager' in window)) { toast('Notifications need HTTPS or localhost'); return null; }
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub || !create) return sub;
+  if ((await within(Notification.requestPermission(), 15000)) !== 'granted') { toast('Notifications blocked'); return null; }
+  const b64 = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  return within(reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64((await api('/api/push/key')).key) }), 10000);
+}
+const pushFail = (err) => toast(err.message === 'timeout' ? 'Notifications unavailable here' : 'Could not set notification');
+
+// One bus: alert N min before it arrives (N is the stop's alert minutes, else 5)
 async function toggleWatch(btn) {
-  const w = { stopId: btn.dataset.stop, stopName: btn.dataset.name, tripId: btn.dataset.trip, route: btn.dataset.route, headsign: btn.dataset.hs, minutes: +$('#mins').value };
+  const w = { stopId: btn.dataset.stop, stopName: btn.dataset.name, tripId: btn.dataset.trip, route: btn.dataset.route, headsign: btn.dataset.hs, minutes: stopAlerts[btn.dataset.stop] || 5 };
   const k = watchKey(w.stopId, w.tripId);
   try {
-    if (!('serviceWorker' in navigator && 'PushManager' in window)) return toast('Notifications need HTTPS or localhost');
-    const reg = await navigator.serviceWorker.ready;
-    let sub = await reg.pushManager.getSubscription();
-    if (watching.has(k)) {
-      if (sub) await post('/api/push/unwatch', { sub, stopId: w.stopId, tripId: w.tripId });
-      watching.delete(k);
-    } else {
-      if ((await within(Notification.requestPermission(), 15000)) !== 'granted') return toast('Notifications blocked');
-      const b64 = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
-      sub ||= await within(reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64((await api('/api/push/key')).key) }), 10000);
-      await post('/api/push/watch', { ...w, sub });
-      watching.add(k);
-      toast(`Will notify at ${w.minutes} min`);
-    }
+    const sub = await getSub(!watching.has(k));
+    if (!sub) return;
+    if (watching.has(k)) { await post('/api/push/unwatch', { sub, stopId: w.stopId, tripId: w.tripId }); watching.delete(k); }
+    else { await post('/api/push/watch', { ...w, sub }); watching.add(k); toast(`Will notify at ${w.minutes} min`); }
     store.set('watching', [...watching]);
     btn.classList.toggle('on', watching.has(k));
-  } catch (err) { toast(err.message === 'timeout' ? 'Notifications unavailable here' : 'Could not set notification'); }
+  } catch (err) { pushFail(err); }
+}
+
+// Every bus at a pinned stop (only the routes you chose in Routes to show): alert N min before each one until turned off
+let stopAlerts = store.get('stopAlerts', {}); // stopId -> minutes
+const stopWatch = (id) => ({ stopId: id, stopName: (pins.find((p) => p.id === id) || {}).name, standing: true, minutes: stopAlerts[id], routes: shown });
+async function toggleStopAlert(id) {
+  try {
+    const on = id in stopAlerts, sub = await getSub(!on);
+    if (!sub) return;
+    if (on) { await post('/api/push/unwatch', { sub, stopId: id }); delete stopAlerts[id]; }
+    else { stopAlerts[id] = 5; await post('/api/push/watch', { ...stopWatch(id), sub }); toast(`Alerts on: 5 min before every bus`); }
+    store.set('stopAlerts', stopAlerts); refreshPins();
+  } catch (err) { pushFail(err); }
+}
+async function syncStopAlerts(ids = Object.keys(stopAlerts)) { // push the current minutes / route filter to the server
+  if (!ids.length) return;
+  try { const sub = await getSub(false); if (sub) for (const id of ids) await post('/api/push/watch', { ...stopWatch(id), sub }); } catch {}
 }
 
 $('#pins').onclick = $('#nearby').onclick = (e) => {
   const t = e.target.closest('button');
   if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
   if (t.classList.contains('bell')) return toggleWatch(t);
+  if (t.dataset.stopalert) return toggleStopAlert(t.dataset.stopalert);
+  if (t.dataset.more) { const open = t.closest('.card').classList.toggle('open'); return open ? openStops.add(t.dataset.more) : openStops.delete(t.dataset.more); }
   if (t.dataset.locate !== undefined) return refreshNearby(true);
   if (t.dataset.pin) { toggleStopPin({ id: t.dataset.pin, name: t.dataset.name, lat: +t.dataset.lat, lon: +t.dataset.lon }); return renderNearby(); }
-  if (t.dataset.unpin) { pins = pins.filter((p) => p.id !== t.dataset.unpin); store.set('pins', pins); return refreshPins(); }
+  if (t.dataset.unpin) { if (t.dataset.unpin in stopAlerts) toggleStopAlert(t.dataset.unpin); pins = pins.filter((p) => p.id !== t.dataset.unpin); store.set('pins', pins); return refreshPins(); }
   if (t.dataset.unroute) { routePins = routePins.filter((r) => r.short !== t.dataset.unroute); store.set('routePins', routePins); return refreshPins(); }
   if (t.dataset.maproute) { showTab('map'); $('#maproute').value = t.dataset.maproute; fitNext = true; syncSeg(); return refreshMap(); }
   if (t.dataset.addstop) {
@@ -324,6 +353,8 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
     openStopSheet(r, { multi: true, isPinned: isStopPinned, onStop: toggleStopPin });
   }
 };
+
+$('#pins').onchange = (e) => { const id = e.target.dataset.amins; if (!id) return; stopAlerts[id] = +e.target.value; store.set('stopAlerts', stopAlerts); syncStopAlerts([id]); };
 
 // ---------- plan ----------
 const place = { from: null, to: null };

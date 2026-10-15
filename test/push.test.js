@@ -42,3 +42,34 @@ test('unwatch cancels, and a trip missing from the feed is kept briefly then dro
   push.unwatch(w({ tripId: 'X' }));
   assert.ok(!push.has(w({ tripId: 'X' })));
 });
+
+test('standing stop watch notifies once per bus, only for chosen routes, and keeps watching', async () => {
+  sent.length = 0;
+  const list = [
+    { trip: 'A', route: '60', time: now() + 200, live: true, headsign: 'Confederation' },
+    { trip: 'B', route: '17', time: now() + 200, live: true }, // route not chosen
+    { trip: 'C', route: '60', time: now() + 3000, live: false }, // too far away
+  ];
+  const push = createPush({ arrivals: async () => list, checkEveryMs: 1e9 });
+  const sw = { sub: { endpoint: 'e2' }, stopId: 'S2', standing: true, routes: ['60'], minutes: 5, stopName: 'Steeves' };
+  push.watch(sw);
+  await push.check();
+  assert.strictEqual(sent.length, 1);
+  assert.match(sent[0].title, /Route 60 in [3] min/);
+  await push.check();
+  assert.strictEqual(sent.length, 1); // not again for the same bus
+  list[2].time = now() + 120; // the next bus comes into range
+  await push.check();
+  assert.strictEqual(sent.length, 2);
+  assert.ok(push.has(sw)); // still watching
+  push.unwatch({ sub: { endpoint: 'e2' }, stopId: 'S2' });
+  assert.ok(!push.has(sw));
+});
+
+test('a standing watch with routes=null covers every route', async () => {
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [{ trip: 'Z', route: '99', time: now() + 60, live: true }], checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'e3' }, stopId: 'S3', standing: true, routes: null, minutes: 5, stopName: 'X' });
+  await push.check();
+  assert.strictEqual(sent.length, 1);
+});

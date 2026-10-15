@@ -203,3 +203,13 @@ header { align-items: center; }
 .trip-opt .chev .ic { width: 20px; height: 20px; }
 .meta .rb { margin-left: auto; display: flex; gap: 4px; }
 .meta .rb .badge { min-width: 0; padding: 1px 6px; font-size: 12px; }
+
+/* pinned stop cards: next bus only, rest behind a chevron */
+.card .more { display: none; }
+.card.open .more { display: block; }
+.morebtn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; border: 0; border-top: 1px solid var(--line); background: none; color: var(--muted); font-size: 13px; padding: 10px 0 2px; margin-top: 4px; }
+.morebtn .ic { width: 18px; height: 18px; transition: transform .2s; }
+.card.open .morebtn .ic { transform: rotate(180deg); }
+.card.open .morebtn span { display: none; }
+.card h2 .stopbell.on { color: var(--accent); background: var(--accent-soft); }
+.amins { font-size: 13px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); flex: none; }
