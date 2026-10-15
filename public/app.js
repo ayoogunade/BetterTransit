@@ -44,6 +44,12 @@ function searchBox({ input, box, kinds, empty, onPick }) {
     items = list;
     box.innerHTML = list.map((it, i) => `<div class="sg" data-i="${i}"><span class="ico">${ICON[it.kind]}</span><span class="t"><b>${esc(titleOf(it))}</b><small>${esc(subOf(it))}</small></span>${onPick.pinsOnly ? '<span class="add">＋</span>' : ''}</div>`).join('');
   };
+  // Typing a number means a route/stop number, so those come first. Typing words usually means a place, so places lead and bus lines trail (max 2).
+  const rank = (list, q) => {
+    const pri = /^\d{1,3}$/.test(q) ? { route: 0, stop: 1, dest: 2, place: 3 } : { place: 0, stop: 1, dest: 2, route: 3 };
+    let routes = 0;
+    return list.filter((it) => it.kind !== 'route' || /^\d/.test(q) || ++routes <= 2).sort((a, b) => pri[a.kind] - pri[b.kind]).slice(0, 9);
+  };
   const localKinds = kinds.split(',').filter((k) => k !== 'place').join(','), wantPlaces = kinds.includes('place');
   const get = (k, q) => api(`/api/suggest?q=${encodeURIComponent(q)}&kinds=${k}&session=${session}`);
   // Routes/stops/destinations are instant, so show them first; addresses (a network call to Google) are appended when they arrive.
@@ -55,7 +61,7 @@ function searchBox({ input, box, kinds, empty, onPick }) {
     try {
       if (localKinds) local = await get(localKinds, q);
       if (id !== seq) return; // a newer keystroke superseded this one
-      if (local.length) render(local);
+      if (local.length) render(rank(local, q));
       else if (wantPlaces && q.length >= 3) box.innerHTML = '<div class="empty" style="padding:12px">Searching…</div>';
       if (wantPlaces && q.length >= 3) {
         const places = await get('place', q).catch(() => []);
@@ -64,7 +70,7 @@ function searchBox({ input, box, kinds, empty, onPick }) {
       }
     } catch { if (id === seq) box.innerHTML = '<div class="empty" style="padding:12px">Search needs a connection</div>'; return; }
     if (id !== seq) return;
-    local.length ? render(local) : (box.innerHTML = '<div class="empty" style="padding:12px">No matches</div>');
+    local.length ? render(rank(local, q)) : (box.innerHTML = '<div class="empty" style="padding:12px">No matches</div>');
   };
   const close = () => { seq++; drilling = false; box.innerHTML = ''; };
   const ctx = {
@@ -77,7 +83,8 @@ function searchBox({ input, box, kinds, empty, onPick }) {
     if (it.kind === 'place') session = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()); // session ends once a place is chosen
   };
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 180); });
-  input.addEventListener('focus', run);
+  input.addEventListener('focus', () => { document.body.classList.add('typing'); setTimeout(() => input.scrollIntoView({ block: 'start', behavior: 'smooth' }), 250); run(); });
+  input.addEventListener('blur', () => setTimeout(() => document.body.classList.remove('typing'), 400));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && items[0] && !drilling) { e.preventDefault(); pick(items[0]); } });
   box.addEventListener('click', (e) => { const el = !drilling && e.target.closest('[data-i]'); if (el) pick(items[+el.dataset.i]); });
   document.addEventListener('click', (e) => { if (!input.parentElement.contains(e.target)) close(); });
@@ -190,7 +197,7 @@ $('#pins').onclick = (e) => {
   if (t.classList.contains('bell')) return toggleWatch(t);
   if (t.dataset.unpin) { pins = pins.filter((p) => p.id !== t.dataset.unpin); store.set('pins', pins); return refreshPins(); }
   if (t.dataset.unroute) { routePins = routePins.filter((r) => r.short !== t.dataset.unroute); store.set('routePins', routePins); return refreshPins(); }
-  if (t.dataset.maproute) { showTab('map'); $('#maproute').value = t.dataset.maproute; fitNext = true; return refreshMap(); }
+  if (t.dataset.maproute) { showTab('map'); $('#maproute').value = t.dataset.maproute; fitNext = true; syncSeg(); return refreshMap(); }
   if (t.dataset.addstop) {
     const r = routePins.find((x) => x.short === t.dataset.addstop);
     window.scrollTo(0, 0); $('#pin-search').value = '';
@@ -229,7 +236,17 @@ $('#swap').onclick = () => {
   planTrip();
 };
 $('#when').onchange = () => planTrip();
-$('#now').onclick = () => { $('#when').value = ''; planTrip(); };
+const setLeave = (later) => { // "Leave now" vs a chosen time; the picker only appears for the latter, so it's never a blank box
+  $('#now').classList.toggle('on', !later); $('#later').classList.toggle('on', later); $('#when').hidden = !later;
+  if (later && !$('#when').value) { // default to the next half hour, in local time
+    const d = new Date(Math.ceil((Date.now() + 60000) / 1800000) * 1800000);
+    $('#when').value = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  }
+  if (!later) $('#when').value = '';
+  planTrip();
+};
+$('#now').onclick = () => setLeave(false);
+$('#later').onclick = () => setLeave(true);
 
 async function planTrip() {
   if (!place.from || !place.to) return;

@@ -27,7 +27,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .sbox { position: relative; margin: 8px 0; }
 .suggest:empty { display: none; }
 .suggest { position: relative; z-index: 5; }
-.suggest { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.12); overflow: hidden; max-height: 55vh; overflow-y: auto; }
+.suggest { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.12); overflow: hidden; max-height: 36vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .sg { display: flex; align-items: center; gap: 10px; padding: 11px 12px; min-height: 52px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .sg:last-child { border-bottom: 0; }
 .sg:active { background: var(--accent-soft); }
@@ -99,3 +99,9 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .far .bus .dot small { display: none; }
 .stopdot { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 4px solid var(--accent); box-sizing: border-box; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 .me { width: 16px; height: 16px; border-radius: 50%; background: #2563eb; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(37,99,235,.25); }
+
+/* iOS Safari collapses an empty datetime-local when its native appearance is removed */
+input[type=datetime-local] { appearance: auto; -webkit-appearance: auto; min-width: 200px; min-height: 40px; }
+.opt button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* leave room under the content so results can scroll up above the on-screen keyboard */
+body.typing main { padding-bottom: 60vh; }
