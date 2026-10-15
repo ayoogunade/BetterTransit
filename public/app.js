@@ -528,6 +528,14 @@ function initMap() {
   const far = () => $('#mapbox').classList.toggle('far', map.getZoom() < 13);
   map.on('zoomend', far); far();
   map.on('moveend', drawDots);
+  // Tapping a bus shows its route line and stops; they go away when its popup closes. A stop dot's popup keeps them up meanwhile.
+  let selBus = null, dotOpen = false;
+  map.on('popupopen', (e) => { const src = e.popup._source; if (src && src._route) { selBus = e.popup; drawRouteLines([src._route]).catch(() => {}); } else dotOpen = true; });
+  map.on('popupclose', (e) => {
+    const src = e.popup._source;
+    if (src && src._route) { if (selBus === e.popup) selBus = null; } else dotOpen = false;
+    setTimeout(() => { if (!selBus && !dotOpen) drawRouteLines([]).catch(() => {}); }); // next tick: switching buses opens the new popup first
+  });
   $$('.seg button').forEach((b) => (b.onclick = () => { mapMode = b.dataset.mode; store.set('mapMode', mapMode); $('#maproute').value = ''; fitNext = mapMode === 'pins'; syncSeg(); refreshMap(); }));
   let t;
   $('#maproute').oninput = () => { clearTimeout(t); t = setTimeout(() => { fitNext = true; syncSeg(); refreshMap(); }, 250); };
@@ -541,7 +549,7 @@ function initMap() {
   syncSeg();
 }
 
-// Route lines + stop dots for the routes being shown. Geometry comes from /api/routemap and is cached per route.
+// Route line + stop dots for the bus you tapped. Geometry comes from /api/routemap and is cached per route.
 const routeGeo = new Map(); // short -> {color, lines: [[lat, lon]...], stops: [[id, name, lat, lon]...]}
 let geoKey = '', geoSeq = 0, geoStops = new Map();
 async function drawRouteLines(shorts) {
@@ -554,7 +562,7 @@ async function drawRouteLines(shorts) {
     for (const x of need) routeGeo.set(x, d[x] || { lines: [], stops: [] });
   }
   if (mine !== geoSeq) return; // a newer selection superseded this one
-  geoKey = key; lineLayer.clearLayers(); geoStops = new Map();
+  geoKey = key; lineLayer.clearLayers(); dotLayer.clearLayers(); dotMarks.clear(); geoStops = new Map();
   for (const x of shorts) {
     const g = routeGeo.get(x), c = '#' + (g.color || '444');
     for (const pts of g.lines) L.polyline(pts, { color: c, weight: shorts.length === 1 ? 5 : 3.5, opacity: shorts.length === 1 ? 0.85 : 0.55, lineJoin: 'round' }).addTo(lineLayer);
@@ -562,16 +570,19 @@ async function drawRouteLines(shorts) {
   }
   drawDots();
 }
-// Stop dots: always for a few routes, otherwise only once zoomed in (they're too dense for the whole network). Only those in view are drawn.
+// Stop dots: always for a few routes, otherwise only once zoomed in (they're too dense for the whole network). Only those in view are drawn,
+// updated in place so a dot whose popup is open is never rebuilt (panning to show the popup would otherwise close it).
+const dotMarks = new Map(); // stop id -> circleMarker
 function drawDots() {
-  dotLayer.clearLayers();
-  if (map.getZoom() < 14 && geoKey.split(',').length > 3) return;
-  const view = map.getBounds().pad(0.1), r = map.getZoom() >= 15 ? 5 : 3.5;
-  for (const [id, s] of geoStops) if (view.contains([s.lat, s.lon])) L.circleMarker([s.lat, s.lon], { radius: r, color: s.c, weight: 2, fillColor: '#fff', fillOpacity: 1 }).bindPopup(`<b>${esc(s.name)}</b><br>Stop ${esc(id)}`).addTo(dotLayer);
-}
-async function geoRoutes(rq, show) { // which routes to draw: the searched one, your pinned ones, or whatever is running in view
-  if (rq) { allRoutes ||= await api('/api/routes'); return allRoutes.filter((r) => num(r.short) === num(rq)).map((r) => r.short); }
-  return mapMode === 'pins' ? [...pinRoutes] : [...new Set(show.map((b) => b.route).filter(Boolean))];
+  const wanted = new Map();
+  if (map.getZoom() >= 14 || geoKey.split(',').length <= 3) { const view = map.getBounds().pad(0.1); for (const [id, s] of geoStops) if (view.contains([s.lat, s.lon])) wanted.set(id, s); }
+  for (const [id, m] of dotMarks) if (!wanted.has(id) && !m.isPopupOpen()) { dotLayer.removeLayer(m); dotMarks.delete(id); }
+  const r = map.getZoom() >= 15 ? 5 : 3.5;
+  for (const [id, s] of wanted) {
+    const m = dotMarks.get(id);
+    if (m) m.setRadius(r);
+    else dotMarks.set(id, L.circleMarker([s.lat, s.lon], { radius: r, color: s.c, weight: 2, fillColor: '#fff', fillOpacity: 1 }).bindPopup(`<b>${esc(s.name)}</b><br>Stop ${esc(id)}`).addTo(dotLayer));
+  }
 }
 
 async function refreshMap() {
@@ -584,11 +595,10 @@ async function refreshMap() {
   for (const b of show) {
     seen.add(b.id);
     const m = markers.get(b.id);
-    if (m) { m.setLatLng([b.lat, b.lon]); m.setIcon(busIcon(b)); m.getPopup() ? m.setPopupContent(busPopup(b)) : m.bindPopup(busPopup(b)); }
-    else markers.set(b.id, L.marker([b.lat, b.lon], { icon: busIcon(b) }).bindPopup(busPopup(b)).addTo(busLayer));
+    if (m) { m._route = b.route; m.setLatLng([b.lat, b.lon]); m.setIcon(busIcon(b)); m.getPopup() ? m.setPopupContent(busPopup(b)) : m.bindPopup(busPopup(b)); }
+    else { const mk = L.marker([b.lat, b.lon], { icon: busIcon(b) }).bindPopup(busPopup(b)).addTo(busLayer); mk._route = b.route; markers.set(b.id, mk); }
   }
   for (const [id, m] of markers) if (!seen.has(id)) { busLayer.removeLayer(m); markers.delete(id); }
-  geoRoutes(rq, show).then(drawRouteLines).catch(() => {});
 
   stopLayer.clearLayers();
   for (const p of pins) {
