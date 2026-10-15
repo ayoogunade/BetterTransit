@@ -48,3 +48,13 @@ test('inactive service gives no route; far-away place gives null', () => {
   assert.strictEqual(plan(at(52.0), at(52.02), 3500, new Set(['other'])), null);
   assert.strictEqual(plan(at(52.0), at(50.0), 3500, services), null);
 });
+
+test('options lists the next departures, each leaving later and arriving later', () => {
+  const opts = plan.options(at(52.0), at(52.02), 3500, services);
+  assert.deepStrictEqual(opts.map((o) => o.legs.find((l) => l.type === 'ride').trip), ['t1', 't2']);
+  assert.ok(opts[0].leave >= 3500 && opts[1].leave > opts[0].leave && opts[1].arrive > opts[0].arrive);
+});
+
+test('options is empty when there is no route', () => {
+  assert.deepStrictEqual(plan.options(at(52.0), at(50.0), 3500, services), []);
+});

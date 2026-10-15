@@ -32,7 +32,7 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
   const footpaths = (id) => (footCache[id] ||= near(byId[id], TRANSFER_M).filter((x) => x.stop !== id).map((x) => ({ stop: x.stop, w: x.m / WALK_MPS })));
 
   // from/to are {lat, lon}; dep is seconds since local midnight; services is the active service-id Set
-  return function plan(from, to, dep, services, live = new Map()) {
+  const plan = function (from, to, dep, services, live = new Map()) {
     // effective trip: live-adjusted times when the realtime feed has predictions; null if cancelled
     const effCache = new Map();
     const eff = (tr) => {
@@ -108,4 +108,22 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
     legs.reverse();
     return { arrive: end.t, finalWalk: end.w, legs };
   };
+
+  // The next few itineraries: after each one, plan again from just after its first boarding so the following bus/connection is found.
+  // An option that arrives no later than the previous one but leaves later replaces it. Each has `leave` (seconds, when to set out).
+  plan.options = (from, to, dep, services, live, n = 4) => {
+    const out = [];
+    for (let t = dep; out.length < n && t < dep + 3 * 3600;) {
+      const r = plan(from, to, t, services, live);
+      if (!r) break;
+      const ride = r.legs.find((l) => l.type === 'ride');
+      if (!ride) { if (!out.length) out.push({ ...r, leave: t }); break; }
+      const leave = ride.times[ride.from] - (r.legs[0].type === 'walk' ? r.legs[0].secs : 0);
+      if (out.length && r.arrive <= out[out.length - 1].arrive) out.pop();
+      out.push({ ...r, leave });
+      t = leave + 60;
+    }
+    return out;
+  };
+  return plan;
 };

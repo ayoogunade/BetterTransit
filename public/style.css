@@ -193,3 +193,13 @@ header { align-items: center; }
 .filterbar span { flex: 1; }
 .filterbar .ic { width: 16px; height: 16px; }
 .filterbar button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 12px; font-size: 14px; }
+
+/* trip options: tap to expand */
+.trip-opt { cursor: pointer; }
+.trip-opt .legs { display: none; }
+.trip-opt.open .legs { display: block; }
+.trip-opt .chev { margin-left: auto; color: var(--muted); transition: transform .2s; }
+.trip-opt.open .chev { transform: rotate(180deg); }
+.trip-opt .chev .ic { width: 20px; height: 20px; }
+.meta .rb { margin-left: auto; display: flex; gap: 4px; }
+.meta .rb .badge { min-width: 0; padding: 1px 6px; font-size: 12px; }

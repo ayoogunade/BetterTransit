@@ -182,12 +182,15 @@ async function alerts() {
 
 // Stops within 800 m of a point (nearest first, max 5) that have buses coming. Hubs are skipped: their child stops are listed individually.
 const metres = (a, b) => Math.hypot((a.lat - b.lat) * 111200, (a.lon - b.lon) * 111200 * Math.cos(a.lat * Math.PI / 180));
-async function nearby(lat, lon) {
+async function nearby(lat, lon, only = []) {
   const near = stops.filter((s) => s.location_type !== '1')
     .map((s) => ({ s, dist: Math.round(metres({ lat, lon }, { lat: +s.stop_lat, lon: +s.stop_lon })) }))
-    .filter((x) => x.dist <= 800).sort((a, b) => a.dist - b.dist).slice(0, 5);
-  const out = await Promise.all(near.map(async ({ s, dist }) => ({ id: s.stop_id, name: s.stop_name, lat: +s.stop_lat, lon: +s.stop_lon, dist, arrivals: await arrivalsAt(s.stop_id) })));
-  return out.filter((p) => p.arrivals.length);
+    .filter((x) => x.dist <= 800).sort((a, b) => a.dist - b.dist).slice(0, only.length ? 15 : 5); // with a route filter, look further down the list
+  const out = await Promise.all(near.map(async ({ s, dist }) => {
+    const arr = await arrivalsAt(s.stop_id);
+    return { id: s.stop_id, name: s.stop_name, lat: +s.stop_lat, lon: +s.stop_lon, dist, arrivals: only.length ? arr.filter((a) => only.includes(a.route)) : arr };
+  }));
+  return out.filter((p) => p.arrivals.length).slice(0, 5);
 }
 
 // Every stop of one trip with its (live-adjusted when available) time, so the app can show clock times and "+N min" offsets.
@@ -236,10 +239,9 @@ async function planTrip(from, to, departAt) {
   const localMidnight = Math.floor((when + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const services = activeServices(new Date((when + TZ_OFFSET_SEC) * 1000));
   const live = when - now < 2 * 3600 ? await liveTimes() : new Map(); // delays only matter for near-term trips
-  const r = plan(from, to, when - localMidnight, services, live);
-  if (!r) return null;
   const abs = (t) => localMidnight + t;
-  return {
+  return plan.options(from, to, when - localMidnight, services, live).map((r) => ({
+    leave: abs(r.leave),
     arrive: abs(r.arrive),
     legs: r.legs.map((l) => {
       if (l.type === 'walk') return { type: 'walk', mins: Math.max(1, Math.round(l.secs / 60)), to: l.to ? nameOf(l.to) : null };
@@ -247,7 +249,7 @@ async function planTrip(from, to, departAt) {
       return { type: 'ride', live: l.live, route: rt.route_short_name, color: rt.route_color, headsign: t.trip_headsign, from: nameOf(l.stops[l.from]), to: nameOf(l.stops[l.to]), dep: abs(l.times[l.from]), arr: abs(l.times[l.to]), stops: l.to - l.from };
     }),
     finalWalkMins: Math.round(r.finalWalk / 60),
-  };
+  }));
 }
 
 // ---------- http ----------
@@ -272,7 +274,7 @@ const server = http.createServer(async (req, res) => {
     }
     let m;
     if ((m = p.match(/^\/api\/arrivals\/(.+)$/))) return json(res, await arrivals(decodeURIComponent(m[1])));
-    if (p === '/api/nearby') return json(res, await nearby(+u.searchParams.get('lat'), +u.searchParams.get('lon')));
+    if (p === '/api/nearby') return json(res, await nearby(+u.searchParams.get('lat'), +u.searchParams.get('lon'), (u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if ((m = p.match(/^\/api\/trip\/(.+)$/))) { const t = await tripTimeline(decodeURIComponent(m[1])); return t ? json(res, t) : json(res, { error: 'not found' }, 404); }
     if (p === '/api/vehicles') return json(res, await vehicles((u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if (p === '/api/push/key') return json(res, { key: push.publicKey });

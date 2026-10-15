@@ -166,7 +166,7 @@ async function openTripSheet(tripId, stopId) {
 let shown = store.get('shownRoutes', null), allRoutes = null;
 const routeOn = (short) => !shown || shown.includes(short);
 function applyRouteFilter() {
-  syncSeg();
+  syncSeg(); refreshPins(); refreshNearby();
   if (map) refreshMap();
   if (!$('#alerts').hidden) refreshAlerts();
 }
@@ -225,13 +225,14 @@ const pinSearch = searchBox({
 
 const watchKey = (stop, trip) => stop + '|' + trip;
 function stopCard(p, list, nearby = false) {
+  list = list.filter((a) => routeOn(a.route));
   const rows = list.length ? list.slice(0, nearby ? 4 : 6).map((a, i) => `
     <div class="row ${i ? '' : 'first'}" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}" aria-label="Alert me">${icon('bell')}</button>
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}</span>
       <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}<span class="sched">${clock(a.time)}${a.live ? '' : ` · ${icon('clock')} sched.`}</span></span>
-    </div>`).join('') : '<div class="empty">No upcoming buses</div>';
+    </div>`).join('') : `<div class="empty">No upcoming buses${shown ? ' on your routes' : ''}</div>`;
   const act = nearby
     ? `<small class="dist">${p.dist} m</small><button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
     : `<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
@@ -278,7 +279,10 @@ function renderNearby() {
 }
 async function refreshNearby(ask = false) {
   if (!ask && !(await geoGranted())) return renderNearby();
-  try { const me = await here(); nearbyData = await api(`/api/nearby?lat=${me.lat}&lon=${me.lon}`); }
+  try {
+    const me = await here();
+    nearbyData = shown && !shown.length ? [] : await api(`/api/nearby?lat=${me.lat}&lon=${me.lon}${shown ? '&routes=' + shown.map(encodeURIComponent).join(',') : ''}`);
+  }
   catch { if (ask) toast('Location unavailable'); }
   renderNearby();
 }
@@ -349,7 +353,7 @@ async function loadSlotMins() { // travel time from here to each saved place, sh
   slotAt = Date.now();
   let me; try { me = await here(); } catch { return; }
   for (const k of Object.keys(saved)) api(`/api/plan?from=${me.lat},${me.lon}&to=${saved[k].lat},${saved[k].lon}&depart=0`)
-    .then((r) => { slotMins[k] = r ? Math.round((r.arrive - Date.now() / 1000) / 60) : null; renderPlaces(); }).catch(() => {});
+    .then((r) => { slotMins[k] = r && r.length ? Math.round((r[0].arrive - Date.now() / 1000) / 60) : null; renderPlaces(); }).catch(() => {});
 }
 $('#places').onclick = (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -411,9 +415,13 @@ async function planTrip() {
   let r;
   try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&depart=${depart}`); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
-  if (!r) return ($('#trip').innerHTML = '<div class="empty">No route found. Try a different time or place.</div>');
-  // Timeline: clock time + stop name at each boarding/alighting, a coloured rail per bus ride, icons instead of sentences
-  const start = depart || Math.floor(Date.now() / 1000);
+  if (!r || !r.length) return ($('#trip').innerHTML = '<div class="empty">No route found. Try a different time or place.</div>');
+  $('#trip').innerHTML = r.map((o, i) => tripCard(o, i === 0)).join('');
+}
+$('#trip').onclick = (e) => { const c = e.target.closest('.trip-opt'); if (c) c.classList.toggle('open'); }; // tap an option to expand/collapse its steps
+
+// One itinerary: leave -> arrive, route badges, and a timeline (clock time + stop at each boarding/alighting, a coloured rail per ride)
+function tripCard(r, open) {
   const rides = r.legs.filter((l) => l.type === 'ride');
   const walk = r.legs.filter((l) => l.type === 'walk').reduce((n, l) => n + l.mins, 0) + (r.finalWalkMins || 0);
   const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
@@ -422,9 +430,9 @@ async function planTrip() {
     : `<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
         <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live"><i></i>live</span>` : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small></div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
-  $('#trip').innerHTML = `<div class="card"><div class="summary"><span>${icon('clock')} ${clock(start)}</span><span class="to">${icon('arrow-right')}</span><span>${icon('flag')} ${clock(r.arrive)}</span></div>
-    <div class="meta"><span>${icon('timer')} ${Math.round((r.arrive - start) / 60)} min</span>${rides.length > 1 ? `<span>${icon('repeat')} ${rides.length - 1}</span>` : ''}<span>${icon('footprints')} ${walk} min</span></div>
-    ${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}</div>`;
+  return `<div class="card trip-opt ${open ? 'open' : ''}"><div class="summary"><span>${icon('clock')} ${clock(r.leave)}</span><span class="to">${icon('arrow-right')}</span><span>${icon('flag')} ${clock(r.arrive)}</span><span class="chev">${icon('chevron-down')}</span></div>
+    <div class="meta"><span>${icon('timer')} ${Math.round((r.arrive - r.leave) / 60)} min</span>${rides.length > 1 ? `<span>${icon('repeat')} ${rides.length - 1}</span>` : ''}<span>${icon('footprints')} ${walk} min</span><span class="rb">${rides.map((l) => badge(l.route, l.color)).join('')}</span></div>
+    <div class="legs">${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}</div></div>`;
 }
 
 // ---------- map ----------
