@@ -117,7 +117,7 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
   const draw = () => {
     el.innerHTML = `<div class="sheet-bar"><div><b>Route ${esc(route.short)}</b><small>${esc(route.long || '')}${multi ? ' · tap stops to pin' : ' · choose a stop'}</small></div><button data-close class="done">Done</button></div>
       <div class="dirs">${dirs.map((d, i) => `<button data-d="${i}" class="${i === sel ? 'on' : ''}">${icon('arrow-right')} ${esc(d.headsign)} <small>(${d.stops.length})</small></button>`).join('')}</div>
-      <div class="sheet-filter"><input type="search" placeholder="Filter ${dirs[sel].stops.length} stops" value="${esc(q)}" autocomplete="off"></div>
+      <div class="sheet-filter"><input type="search" placeholder="Filter ${dirs[sel].stops.length} stops" value="${esc(q)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
       <div class="sheet-list">${rows()}</div>`;
     const input = el.querySelector('input');
     input.oninput = () => { q = input.value.trim().toLowerCase(); el.querySelector('.sheet-list').innerHTML = rows(); };

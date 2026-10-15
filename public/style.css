@@ -152,3 +152,7 @@ body.noscroll { overflow: hidden; }
 .live { display: inline-flex; align-items: center; gap: 5px; }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 .leaflet-popup-content .ic { width: 14px; height: 14px; vertical-align: -0.15em; }
+
+/* iOS: opaque cover over the status-bar area so scrolled content (and the title) never slides under the clock and battery */
+body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 1500; pointer-events: none; }
+.sbox { scroll-margin-top: calc(env(safe-area-inset-top) + 12px); }
