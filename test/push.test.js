@@ -73,3 +73,25 @@ test('a standing watch with routes=null covers every route', async () => {
   await push.check();
   assert.strictEqual(sent.length, 1);
 });
+
+test('a watched bus that gets cancelled or detoured sends one heads-up and drops the watch', async () => {
+  for (const flag of ['cancelled', 'skipped']) {
+    sent.length = 0;
+    const push = createPush({ arrivals: async () => [{ trip: 'T', time: now() + 900, [flag]: true }], checkEveryMs: 1e9 });
+    push.watch(w());
+    await push.check();
+    assert.strictEqual(sent.length, 1);
+    assert.match(sent[0].title, flag === 'cancelled' ? /Route 17 cancelled/ : /not stopping here/);
+    assert.ok(!push.has(w()));
+  }
+});
+
+test('standing watches ignore cancelled, skipped and departed buses', async () => {
+  sent.length = 0;
+  const t = now() + 60;
+  const list = [{ trip: 'A', route: '60', time: t, cancelled: true }, { trip: 'B', route: '60', time: t, skipped: true }, { trip: 'C', route: '60', time: t, gone: true }];
+  const push = createPush({ arrivals: async () => list, checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'e4' }, stopId: 'S4', standing: true, routes: null, minutes: 5, stopName: 'X' });
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+});

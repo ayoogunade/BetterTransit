@@ -31,6 +31,7 @@ module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
     for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip];
     for (const a of list) {
       if (w.routes && !w.routes.includes(a.route)) continue;
+      if (a.cancelled || a.skipped || a.gone) continue; // not coming to this stop
       if (w.sent[a.trip] || a.time - now > w.minutes * 60 || a.time < now - 60) continue;
       w.sent[a.trip] = now;
       const mins = Math.max(0, Math.round((a.time - now) / 60));
@@ -50,6 +51,11 @@ module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
       if (!arr[w.stopId]) { keep.push(w); continue; } // feed hiccup: try again next tick
       if (!hit) { if (!w.missing) w.missing = now; if (now - w.missing < 300) keep.push(w); continue; } // trip left the feed: give up after 5 min
       delete w.missing;
+      if (hit.gone) continue; // it already passed the stop
+      if (hit.cancelled || hit.skipped) { // tell them now so they don't keep waiting
+        await send(w, { title: `Route ${w.route} ${hit.cancelled ? 'cancelled' : 'not stopping here'}`, body: `${w.headsign || ''} at ${w.stopName}${hit.cancelled ? ' was cancelled' : ' is skipping this stop (detour)'}` });
+        continue;
+      }
       if (hit.time - now > w.minutes * 60) { keep.push(w); continue; }
       const mins = Math.max(0, Math.round((hit.time - now) / 60));
       await send(w, { title: `Route ${w.route} ${mins <= 0 ? 'is due' : `in ${mins} min`}`, body: `${w.headsign || ''} at ${w.stopName}${hit.live ? '' : ' (scheduled)'}` });

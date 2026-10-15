@@ -103,34 +103,78 @@ async function arrivals(id) {
   return lists.flat().sort((a, b) => a.time - b.time).slice(0, 12);
 }
 
+// What the realtime feeds say about every trip, rebuilt once per feed message:
+// tripId -> { cancelled, at: Map(stop index -> {time, skipped}), next: index of the first stop still ahead (null: trip finished), bus: a vehicle is on it }
+// plus the blocks that have a bus out right now (blockId -> start time of the trip that bus is running).
+const stateCache = new WeakMap();
+async function realtimeState() {
+  const msg = await feed('TripUpdate/TripUpdates.pb'), vmsg = await feed('Vehicle/VehiclePositions.pb');
+  const hit = stateCache.get(msg);
+  if (hit && hit.vmsg === vmsg) return hit;
+  const now = Date.now() / 1000, byTrip = new Map(), blocks = new Map();
+  for (const e of msg.entity) {
+    const tu = e.tripUpdate, sts = tu && tripStops[tu.trip.tripId];
+    if (!sts) continue; // ad-hoc trips with no route we can name
+    const s = { cancelled: tu.trip.scheduleRelationship === 3, at: new Map(), next: null, bus: false };
+    for (const u of tu.stopTimeUpdate || []) {
+      // match by stop_sequence when given (a loop route visits a stop twice), else by stop id
+      const i = u.stopSequence ? sts.findIndex((x) => x.seq === u.stopSequence) : sts.findIndex((x) => x.stop === u.stopId);
+      if (i < 0) continue;
+      const time = Number((u.arrival || u.departure || {}).time || 0);
+      s.at.set(i, { time, skipped: u.scheduleRelationship === 1 });
+    }
+    for (const [i, x] of [...s.at].sort((a, b) => a[0] - b[0])) if (!x.skipped && x.time > now - 30) { s.next = i; break; }
+    byTrip.set(tu.trip.tripId, s);
+  }
+  for (const e of vmsg.entity) {
+    const id = e.vehicle && e.vehicle.trip && e.vehicle.trip.tripId, t = trips[id];
+    if (!t) continue;
+    if (byTrip.has(id)) byTrip.get(id).bus = true;
+    const start = tripStops[id][0].t;
+    if (t.block_id && !(blocks.get(t.block_id) <= start)) blocks.set(t.block_id, start);
+  }
+  const out = { vmsg, byTrip, blocks };
+  stateCache.set(msg, out);
+  return out;
+}
+
+// Arrivals at one stop, each with how much to trust it:
+//   tracked: a bus is on this trip, or out on an earlier run of the same block (so it's coming); time is the prediction
+//   sched: timetable time, so delay = time - sched (positive = late, negative = early); stopsAway when the bus is on this trip
+//   cancelled / skipped (detour) are listed so you know not to wait; gone: just passed this stop (shown briefly)
+//   stale: the feed dropped the trip, this is its last prediction; neither tracked nor stale = timetable only
 async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
-  const out = new Map();
-  for (const e of (await feed('TripUpdate/TripUpdates.pb')).entity) {
-    const tu = e.tripUpdate; if (!tu || !trips[tu.trip.tripId]) continue; // skip ad-hoc trips with no route we can name
-    for (const u of tu.stopTimeUpdate || []) {
-      if (u.stopId !== stopId) continue;
-      const time = Number((u.arrival || u.departure || {}).time || 0);
-      if (!time) continue;
-      lastGood.set(`${tu.trip.tripId}|${stopId}`, { time, seen: Date.now() });
-      out.set(tu.trip.tripId, shape(tu.trip.tripId, time, true));
-    }
-  }
-  // keep a recently-seen prediction for 90s if the feed briefly drops it
-  for (const [k, v] of lastGood) {
-    const [trip, stop] = k.split('|');
-    if (Date.now() - v.seen > 90000) lastGood.delete(k);
-    else if (stop === stopId && !out.has(trip) && v.time > now - 60) out.set(trip, { ...shape(trip, v.time, true), stale: true });
-  }
-  // fill in scheduled-only trips, clearly marked live:false
+  const { byTrip, blocks } = await realtimeState();
   const localMidnight = Math.floor((now + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const services = activeServices(new Date((now + TZ_OFFSET_SEC) * 1000));
+  const out = [];
   for (const st of stopTimesByStop[stopId] || []) {
-    const t = trips[st.trip]; if (!t || !services.has(t.service_id) || out.has(st.trip)) continue;
-    const time = localMidnight + st.t;
-    if (time > now - 60 && time < now + 3 * 3600) out.set(st.trip, shape(st.trip, time, false));
+    const t = trips[st.trip];
+    const sched = localMidnight + st.t;
+    if (!t || !services.has(t.service_id) || sched < now - 3600 || sched > now + 3 * 3600) continue; // an hour back: late buses still count
+    const sts = tripStops[st.trip], idx = sts.findIndex((x) => x.stop === stopId && x.t === st.t), s = byTrip.get(st.trip);
+    const base = { ...shape(st.trip, sched, false), sched };
+    if (s && s.cancelled) { if (sched > now - 60) out.push({ ...base, cancelled: true }); continue; }
+    const p = s && s.at.get(idx);
+    if (p && p.skipped) { if (sched > now - 60) out.push({ ...base, skipped: true }); continue; }
+    const key = `${st.trip}|${stopId}`;
+    if (p && p.time) {
+      lastGood.set(key, { time: p.time, seen: Date.now() });
+      const passed = s.next == null || s.next > idx;
+      if (passed) { if (p.time > now - 120) out.push({ ...base, time: p.time, gone: true }); continue; }
+      const tracked = s.bus || (!!t.block_id && blocks.get(t.block_id) <= sts[0].t);
+      // stops away only once the bus has actually started this trip (it may be waiting at the first stop)
+      const started = s.bus && (s.next > 0 || (s.at.get(0) || {}).time <= now);
+      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }) });
+      continue;
+    }
+    const last = lastGood.get(key); // keep a recently-seen prediction for 90s if the feed briefly drops it
+    if (last && Date.now() - last.seen < 90000) { if (last.time > now - 60) out.push({ ...base, time: last.time, live: true, stale: true, delay: last.time - sched }); continue; }
+    if (sched > now - 60) out.push(base); // timetable only
   }
-  return [...out.values()].sort((a, b) => a.time - b.time).slice(0, 12);
+  for (const [k, v] of lastGood) if (Date.now() - v.seen > 90000) lastGood.delete(k);
+  return out.sort((a, b) => a.time - b.time).slice(0, 12);
 }
 
 // ---------- vehicles / alerts ----------
@@ -292,7 +336,8 @@ const push = require('./push')({ arrivals: (id) => arrivals(id) });
 const body = (req) => new Promise((ok, no) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch (e) { no(e); } }); });
 
 const server = http.createServer(async (req, res) => {
-  const u = new URL(req.url, 'http://x');
+  let u;
+  try { u = new URL(req.url, 'http://x'); } catch { return json(res, { error: 'bad request' }, 400); } // e.g. a path of "//" must not crash the server
   const p = u.pathname;
   try {
     if (p === '/api/stops') {

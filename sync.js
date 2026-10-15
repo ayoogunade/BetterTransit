@@ -5,7 +5,7 @@ const path = require('path');
 
 const DIR = path.join(__dirname, 'data');
 const FILE = path.join(DIR, 'sync.json');
-const KEYS = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort'];
+const KEYS = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts'];
 
 module.exports = function createSync(file = FILE) {
   let state = {};
