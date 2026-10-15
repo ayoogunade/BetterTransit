@@ -161,6 +161,52 @@ async function openTripSheet(tripId, stopId) {
   if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
 }
 
+// ---------- routes to show (map + alerts) ----------
+// null = every route; otherwise the short names the user cares about. Pinned routes/stops and an explicit map route search always show.
+let shown = store.get('shownRoutes', null), allRoutes = null;
+const routeOn = (short) => !shown || shown.includes(short);
+function applyRouteFilter() {
+  syncSeg();
+  if (map) refreshMap();
+  if (!$('#alerts').hidden) refreshAlerts();
+}
+async function openRoutesSheet() {
+  const { el, close } = sheetShell('<div class="sheet-bar"><b>Routes to show</b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading routes…</div>');
+  const done = () => { close(); applyRouteFilter(); };
+  try { allRoutes ||= await api('/api/routes'); }
+  catch { el.querySelector('.empty').textContent = 'Could not load routes. Check your connection.'; el.onclick = (e) => e.target.closest('[data-close]') && done(); return; }
+  const sel = new Set(shown || allRoutes.map((r) => r.short));
+  let q = '';
+  const save = () => { shown = sel.size === allRoutes.length ? null : [...sel]; store.set('shownRoutes', shown); };
+  const rows = () => allRoutes.filter((r) => !q || `${r.short} ${r.long}`.toLowerCase().includes(q))
+    .map((r) => `<div class="sg ${sel.has(r.short) ? '' : 'off'}" data-r="${esc(r.short)}">${badge(r.short, r.color)}<span class="t"><b>${esc(r.long)}</b></span><span class="mark ${sel.has(r.short) ? 'on' : ''}">${sel.has(r.short) ? icon('check') : ''}</span></div>`).join('')
+    || '<div class="empty" style="padding:16px">No routes match.</div>';
+  const count = () => `${sel.size} of ${allRoutes.length} routes shown on the map and in alerts`;
+  el.innerHTML = `<div class="sheet-bar"><div><b>Routes to show</b><small id="rcount">${count()}</small></div><button data-close class="done">Done</button></div>
+    <div class="dirs"><button data-act="all">Show all</button><button data-act="none">Hide all</button>${routePins.length ? '<button data-act="pinned">Only pinned routes</button>' : ''}</div>
+    <div class="sheet-filter"><input type="search" placeholder="Filter routes" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>
+    <div class="sheet-list">${rows()}</div>`;
+  const list = el.querySelector('.sheet-list');
+  const redraw = () => { list.innerHTML = rows(); el.querySelector('#rcount').textContent = count(); save(); };
+  el.querySelector('input').oninput = (e) => { q = e.target.value.trim().toLowerCase(); list.innerHTML = rows(); };
+  el.onclick = (e) => {
+    if (e.target.closest('[data-close]')) return done();
+    const act = e.target.closest('[data-act]');
+    if (act) {
+      sel.clear();
+      (act.dataset.act === 'all' ? allRoutes.map((r) => r.short) : act.dataset.act === 'pinned' ? routePins.map((r) => r.short) : []).forEach((x) => sel.add(x));
+      return redraw();
+    }
+    const row = e.target.closest('[data-r]'); if (!row) return;
+    const k = row.dataset.r, on = !sel.has(k);
+    on ? sel.add(k) : sel.delete(k); save();
+    row.classList.toggle('off', !on); // update just this row so the scroll position stays put
+    const mark = row.querySelector('.mark'); mark.classList.toggle('on', on); mark.innerHTML = on ? icon('check') : '';
+    el.querySelector('#rcount').textContent = count();
+  };
+}
+$('#routes-btn').onclick = openRoutesSheet;
+
 // ---------- pinned ----------
 const isStopPinned = (s) => pins.some((p) => p.id === s.id);
 const toggleStopPin = (s) => {
@@ -392,7 +438,9 @@ const busIcon = (b) => L.divIcon({
 });
 const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
 
-function syncSeg() { $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
+function syncSeg() {
+  $('.seg [data-mode=all]').textContent = shown ? 'My routes' : 'All';
+  $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
 function initMap() {
   if (map) return;
   map = L.map('mapbox').setView([52.13, -106.65], 12);
@@ -419,7 +467,7 @@ async function refreshMap() {
   let all;
   try { all = await api('/api/vehicles'); } catch { return; }
   const rq = $('#maproute').value.trim();
-  const show = all.filter((b) => (rq ? num(b.route) === num(rq) : mapMode === 'pins' ? b.route && pinRoutes.has(b.route) : true));
+  const show = all.filter((b) => (rq ? num(b.route) === num(rq) : mapMode === 'pins' ? b.route && pinRoutes.has(b.route) : routeOn(b.route)));
   const seen = new Set();
   for (const b of show) {
     seen.add(b.id);
@@ -444,12 +492,16 @@ async function refreshMap() {
 async function refreshAlerts() {
   let a;
   try { a = await api('/api/alerts'); } catch { return ($('#alerts').innerHTML = '<div class="empty">Alerts need a connection.</div>'); }
+  const vis = a.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = a.length - vis.length; // alerts with no route are system-wide: always shown
+  a = vis;
+  const bar = `<div class="filterbar">${icon('sliders-horizontal')}<span>${shown ? `${shown.length} route${shown.length === 1 ? '' : 's'} shown${hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : ''}` : 'Showing all routes'}</span><button data-editroutes>${shown ? 'Edit' : 'Customize'}</button></div>`;
   const yours = (x) => x.routes.some((r) => pinRoutes.has(r));
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
-  $('#alerts').innerHTML = a.length ? a.map((x) => `<div class="card"><h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
+  $('#alerts').innerHTML = bar + (a.length ? a.map((x) => `<div class="card"><h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
     <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
-    <p>${esc(x.description).replace(/\r?\n/g, '<br>')}</p></div>`).join('') : '<div class="empty">No active alerts.</div>';
+    <p>${esc(x.description).replace(/\r?\n/g, '<br>')}</p></div>`).join('') : `<div class="empty">No active alerts${hidden ? ' for your routes' : ''}.</div>`);
 }
+$('#alerts').onclick = (e) => e.target.closest('[data-editroutes]') && openRoutesSheet();
 
 refreshPins(); refreshNearby();
 setInterval(() => { refreshPins(); refreshNearby(); if (map && !$('#map').hidden) refreshMap(); }, 20000);

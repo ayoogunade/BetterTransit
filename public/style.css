@@ -181,3 +181,15 @@ body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 
 .place .go em { font-style: normal; font-weight: 700; font-size: 13px; color: var(--accent); }
 .place .edit { padding: 0 8px; color: var(--muted); display: flex; align-items: center; }
 .place .edit .ic { width: 16px; height: 16px; }
+
+/* routes to show */
+header { align-items: center; }
+.hdr-r { display: flex; align-items: center; gap: 8px; }
+#routes-btn { border: 1px solid var(--line); background: var(--card); border-radius: 10px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; }
+#routes-btn .ic { width: 20px; height: 20px; }
+.sg.off { opacity: .5; }
+.sg .badge { flex: none; }
+.filterbar { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin: 6px 2px; }
+.filterbar span { flex: 1; }
+.filterbar .ic { width: 16px; height: 16px; }
+.filterbar button { border: 1px solid var(--line); background: var(--card); border-radius: 8px; padding: 6px 12px; font-size: 14px; }
