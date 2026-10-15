@@ -14,6 +14,8 @@ const hydrateIcons = (root = document) => root.querySelectorAll('[data-icon]').f
 hydrateIcons();
 const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const etaText = (t) => { const m = Math.round((t - Date.now() / 1000) / 60); return m <= 0 ? 'Due' : m + ' min'; };
+const ageText = (sec) => (sec < 90 ? sec + 's' : Math.round(sec / 60) + 'm'); // how stale a bus position is
+const geoGranted = () => (navigator.permissions ? navigator.permissions.query({ name: 'geolocation' }).then((r) => r.state === 'granted', () => false) : Promise.resolve(false));
 const badge = (short, color) => `<span class="badge" style="background:#${esc(color || '444')}">${esc(short)}</span>`;
 const toast = (msg) => { $('#updated').textContent = msg; setTimeout(refreshPins, 4000); };
 const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
@@ -30,6 +32,7 @@ function showTab(t) {
   ['pinned', 'plan', 'map', 'alerts'].forEach((x) => ($('#' + x).hidden = x !== t));
   if (t === 'map') { initMap(); map.invalidateSize(); refreshMap(); }
   if (t === 'alerts') refreshAlerts();
+  if (t === 'plan') loadSlotMins();
   window.scrollTo(0, 0);
 }
 $$('.tabs button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
@@ -96,14 +99,18 @@ function searchBox({ input, box, kinds, empty, onPick }) {
 
 // Full-screen list of every stop on a route (one tab per direction, with a filter box). One scroll area only, so it scrolls
 // reliably on iOS. multi: stays open so you can pin several stops (onStop toggles); otherwise picking a stop closes it.
-async function openStopSheet(route, { multi = false, isPinned = () => false, onStop }) {
+function sheetShell(html) {
   const el = document.createElement('div');
   el.className = 'sheet';
-  el.innerHTML = '<div class="sheet-bar"><b></b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading stops…</div>';
-  el.querySelector('b').textContent = `Route ${route.short}`;
+  el.innerHTML = html;
   document.body.append(el);
   document.body.classList.add('noscroll');
   const close = () => { el.remove(); document.body.classList.remove('noscroll'); };
+  return { el, close };
+}
+async function openStopSheet(route, { multi = false, isPinned = () => false, onStop }) {
+  const { el, close } = sheetShell('<div class="sheet-bar"><b></b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading stops…</div>');
+  el.querySelector('b').textContent = `Route ${route.short}`;
   let dirs, sel = 0, q = '';
   try { dirs = await api(`/api/route/${encodeURIComponent(route.short)}/stops`); }
   catch { el.querySelector('.empty').textContent = 'Could not load stops. Check your connection.'; el.onclick = (e) => e.target.closest('[data-close]') && close(); return; }
@@ -137,6 +144,23 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
   };
 }
 
+// Full-screen timeline of one trip: clock time and "+N min" (from the next stop) at every stop. stopId highlights the stop you tapped from.
+async function openTripSheet(tripId, stopId) {
+  const { el, close } = sheetShell('<div class="sheet-bar"><b>Trip</b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading trip…</div>');
+  el.onclick = (e) => e.target.closest('[data-close]') && close();
+  let t;
+  try { t = await api('/api/trip/' + encodeURIComponent(tripId)); }
+  catch { el.querySelector('.empty').textContent = 'Could not load this trip.'; return; }
+  const now = Date.now() / 1000;
+  const next = t.stops.findIndex((x) => x.time > now - 30), first = next < 0 ? t.stops.length - 1 : next, base = t.stops[first].time;
+  const rows = t.stops.map((x, i) => `<div class="sg ${i < first ? 'past' : ''} ${x.id === stopId ? 'here' : ''}" ${i === first ? 'data-first' : ''}><span class="t"><b>${esc(x.name)}</b></span>
+    <span class="when"><b>${clock(x.time)}</b>${i < first ? '' : `<small>+${Math.round((x.time - base) / 60)} min</small>`}</span></div>`).join('');
+  el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times'} · from next stop</small></div><button data-close class="done">Done</button></div>
+    <div class="sheet-list">${rows}</div>`;
+  const list = el.querySelector('.sheet-list'), row = list.querySelector('[data-first]');
+  if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+}
+
 // ---------- pinned ----------
 const isStopPinned = (s) => pins.some((p) => p.id === s.id);
 const toggleStopPin = (s) => {
@@ -154,15 +178,18 @@ const pinSearch = searchBox({
 });
 
 const watchKey = (stop, trip) => stop + '|' + trip;
-function stopCard(p, list) {
-  const rows = list.length ? list.slice(0, 6).map((a, i) => `
-    <div class="row ${i ? '' : 'first'}">
+function stopCard(p, list, nearby = false) {
+  const rows = list.length ? list.slice(0, nearby ? 4 : 6).map((a, i) => `
+    <div class="row ${i ? '' : 'first'}" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       <button class="bell ${watching.has(watchKey(p.id, a.trip)) ? 'on' : ''}" data-stop="${esc(p.id)}" data-name="${esc(p.name)}" data-trip="${esc(a.trip)}" data-route="${esc(a.route)}" data-hs="${esc(a.headsign)}" aria-label="Alert me">${icon('bell')}</button>
       ${badge(a.route, a.color)}
       <span class="hs">${esc(a.headsign)}</span>
-      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}${a.live ? '' : `<span class="sched">${icon('clock')} sched.</span>`}</span>
+      <span class="eta ${etaText(a.time) === 'Due' || (a.time - Date.now() / 1000) < 180 ? 'soon' : ''}">${etaText(a.time)}<span class="sched">${clock(a.time)}${a.live ? '' : ` · ${icon('clock')} sched.`}</span></span>
     </div>`).join('') : '<div class="empty">No upcoming buses</div>';
-  return `<div class="card"><h2><span class="name">${esc(p.name)}</span><button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button></h2>${rows}</div>`;
+  const act = nearby
+    ? `<small class="dist">${p.dist} m</small><button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
+    : `<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
+  return `<div class="card"><h2><span class="name">${esc(p.name)}</span>${act}</h2>${rows}</div>`;
 }
 
 function routeCard(r, buses) {
@@ -171,11 +198,11 @@ function routeCard(r, buses) {
   for (const b of mine) (groups.get(b.headsign) || groups.set(b.headsign, []).get(b.headsign)).push(b);
   const body = groups.size ? [...groups].map(([hs, list]) => `<div class="dirhead">${icon('arrow-right')} ${esc(hs)}</div>` + list
     .sort((a, b) => (a.next ? a.next.time : Infinity) - (b.next ? b.next.time : Infinity)).slice(0, 5).map((b, i) => `
-    <div class="row ${i ? '' : 'first'}">
+    <div class="row ${i ? '' : 'first'}" data-open="${esc(b.trip)}">
       <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing}deg)">${icon('navigation-2')}</span>
       <span class="fleet">#${esc(b.label)}</span>
       <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}</span>
-      <span class="eta">${b.next ? etaText(b.next.time) : ''}</span>
+      <span class="eta">${b.next ? etaText(b.next.time) : ''}${b.age == null ? '' : `<span class="sched" title="Position updated ${ageText(b.age)} ago">${icon('radio')} ${ageText(b.age)}</span>`}</span>
     </div>`).join('')).join('') : '<div class="empty">No buses in service right now</div>';
   return `<div class="card"><h2>${badge(r.short, r.color)}<span class="name">${esc(r.long)}</span>
     <button data-maproute="${esc(r.short)}" aria-label="Show on map">${icon('map')}</button><button data-unroute="${esc(r.short)}" aria-label="Unpin">${icon('x')}</button></h2>
@@ -194,6 +221,20 @@ async function refreshPins() {
       || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>';
     $('#updated').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch { $('#updated').textContent = 'Offline: showing last data'; }
+}
+
+// "Near you": stops within 800 m with their next buses. Loads by itself once location is allowed; until then a button asks for it.
+let nearbyData = null;
+function renderNearby() {
+  $('#nearby').innerHTML = '<div class="section-title">Near you</div>' + (nearbyData
+    ? nearbyData.map((p) => stopCard(p, p.arrivals, true)).join('') || '<div class="empty">No buses near you right now</div>'
+    : `<div class="card"><button class="btn" data-locate>${icon('locate-fixed')} Show buses near me</button></div>`);
+}
+async function refreshNearby(ask = false) {
+  if (!ask && !(await geoGranted())) return renderNearby();
+  try { const me = await here(); nearbyData = await api(`/api/nearby?lat=${me.lat}&lon=${me.lon}`); }
+  catch { if (ask) toast('Location unavailable'); }
+  renderNearby();
 }
 
 async function toggleWatch(btn) {
@@ -219,9 +260,12 @@ async function toggleWatch(btn) {
   } catch (err) { toast(err.message === 'timeout' ? 'Notifications unavailable here' : 'Could not set notification'); }
 }
 
-$('#pins').onclick = (e) => {
-  const t = e.target.closest('button'); if (!t) return;
+$('#pins').onclick = $('#nearby').onclick = (e) => {
+  const t = e.target.closest('button');
+  if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
   if (t.classList.contains('bell')) return toggleWatch(t);
+  if (t.dataset.locate !== undefined) return refreshNearby(true);
+  if (t.dataset.pin) { toggleStopPin({ id: t.dataset.pin, name: t.dataset.name, lat: +t.dataset.lat, lon: +t.dataset.lon }); return renderNearby(); }
   if (t.dataset.unpin) { pins = pins.filter((p) => p.id !== t.dataset.unpin); store.set('pins', pins); return refreshPins(); }
   if (t.dataset.unroute) { routePins = routePins.filter((r) => r.short !== t.dataset.unroute); store.set('routePins', routePins); return refreshPins(); }
   if (t.dataset.maproute) { showTab('map'); $('#maproute').value = t.dataset.maproute; fitNext = true; syncSeg(); return refreshMap(); }
@@ -233,6 +277,40 @@ $('#pins').onclick = (e) => {
 
 // ---------- plan ----------
 const place = { from: null, to: null };
+// Home / Work: one tap plans a trip there from where you are. Saved on this device only.
+const SLOTS = [['home', 'Home'], ['work', 'Work']];
+let saved = store.get('saved', {}), pendingSlot = null, slotMins = {}, slotAt = 0;
+const TO_HINT = $('#to').placeholder;
+function renderPlaces() {
+  $('#places').innerHTML = SLOTS.map(([k, label]) => `<div class="place"><button class="go" data-go="${k}">${icon(k === 'home' ? 'house' : 'briefcase')}<span><b>${label}${slotMins[k] ? ` <em>${slotMins[k]} min</em>` : ''}</b><small>${saved[k] ? esc(saved[k].name) : 'Tap to set'}</small></span></button>${saved[k] ? `<button class="edit" data-edit="${k}" aria-label="Change ${label}">${icon('pencil')}</button>` : ''}</div>`).join('');
+}
+function startSet(k) {
+  pendingSlot = k;
+  $('#to').value = ''; place.to = null;
+  $('#to').placeholder = `Search for your ${k}`;
+  $('#to').focus();
+}
+async function goTo(k) {
+  place.to = { lat: saved[k].lat, lon: saved[k].lon }; $('#to').value = saved[k].name;
+  if (!place.from) {
+    try { place.from = await here(); $('#from').value = 'My location'; }
+    catch { toast('Location unavailable'); return $('#from').focus(); }
+  }
+  planTrip();
+}
+async function loadSlotMins() { // travel time from here to each saved place, shown on its chip
+  if (Date.now() - slotAt < 60000 || !Object.keys(saved).length || !(await geoGranted())) return;
+  slotAt = Date.now();
+  let me; try { me = await here(); } catch { return; }
+  for (const k of Object.keys(saved)) api(`/api/plan?from=${me.lat},${me.lon}&to=${saved[k].lat},${saved[k].lon}&depart=0`)
+    .then((r) => { slotMins[k] = r ? Math.round((r.arrive - Date.now() / 1000) / 60) : null; renderPlaces(); }).catch(() => {});
+}
+$('#places').onclick = (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.edit) return startSet(b.dataset.edit);
+  saved[b.dataset.go] ? goTo(b.dataset.go) : startSet(b.dataset.go);
+};
+renderPlaces();
 const recents = () => store.get('recents', []);
 const remember = (p) => store.set('recents', [p, ...recents().filter((r) => !(r.name === p.name && r.sub === p.sub))].slice(0, 6));
 
@@ -241,6 +319,12 @@ function planBox(key) {
   async function choose(it, ctx) {
     try {
       const p = it.kind === 'here' ? { ...(await here()), name: 'My location' } : await ctx.coords(it);
+      if (key === 'to' && pendingSlot) { // this pick is being saved as Home/Work
+        const k = pendingSlot; pendingSlot = null; input.placeholder = TO_HINT;
+        saved[k] = { name: p.name, lat: p.lat, lon: p.lon }; store.set('saved', saved); slotMins[k] = null; slotAt = 0;
+        ctx.close(); renderPlaces(); loadSlotMins();
+        return goTo(k);
+      }
       place[key] = { lat: p.lat, lon: p.lon };
       input.value = p.name;
       if (it.kind !== 'here') remember({ name: p.name, sub: p.sub || '', lat: p.lat, lon: p.lon });
@@ -306,7 +390,7 @@ const busIcon = (b) => L.divIcon({
   className: '', iconSize: [52, 52], iconAnchor: [26, 26],
   html: `<div class="bus" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
 });
-const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}`;
+const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
 
 function syncSeg() { $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
 function initMap() {
@@ -367,5 +451,5 @@ async function refreshAlerts() {
     <p>${esc(x.description).replace(/\r?\n/g, '<br>')}</p></div>`).join('') : '<div class="empty">No active alerts.</div>';
 }
 
-refreshPins();
-setInterval(() => { refreshPins(); if (map && !$('#map').hidden) refreshMap(); }, 20000);
+refreshPins(); refreshNearby();
+setInterval(() => { refreshPins(); refreshNearby(); if (map && !$('#map').hidden) refreshMap(); }, 20000);
