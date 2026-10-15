@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -352,15 +352,22 @@ const stopWatch = (id) => ({ stopId: id, stopName: (pins.find((p) => p.id === id
 async function toggleStopAlert(id) {
   try {
     const on = id in stopAlerts, sub = await getSub(!on);
-    if (!sub) return;
-    if (on) { await post('/api/push/unwatch', { sub, stopId: id }); delete stopAlerts[id]; }
+    if (!sub && !on) return;
+    if (on) { if (sub) await post('/api/push/unwatch', { sub, stopId: id }); delete stopAlerts[id]; } // no sub here: the alert came from another device, just drop it
     else { stopAlerts[id] = 5; await post('/api/push/watch', { ...stopWatch(id), sub }); toast(`Alerts on: 5 min before every bus`); }
-    store.set('stopAlerts', stopAlerts); refreshPins();
+    store.set('stopAlerts', stopAlerts); store.set('alertsHere', Object.keys(stopAlerts)); refreshPins();
   } catch (err) { pushFail(err); }
 }
-async function syncStopAlerts(ids = Object.keys(stopAlerts)) { // push the current minutes / route filter to the server
-  if (!ids.length) return;
-  try { const sub = await getSub(false); if (sub) for (const id of ids) await post('/api/push/watch', { ...stopWatch(id), sub }); } catch {}
+// Alerts are synced between devices but each device has its own push subscription, so make the server's watches for THIS device
+// match the shared list: drop the ones removed elsewhere, (re)register the rest with the current minutes / route filter.
+async function syncStopAlerts(ids = Object.keys(stopAlerts)) {
+  try {
+    const sub = await getSub(false);
+    if (!sub) return;
+    for (const id of store.get('alertsHere', [])) if (!(id in stopAlerts)) await post('/api/push/unwatch', { sub, stopId: id });
+    for (const id of ids) await post('/api/push/watch', { ...stopWatch(id), sub });
+    store.set('alertsHere', Object.keys(stopAlerts));
+  } catch {}
 }
 
 $('#pins').onclick = $('#nearby').onclick = (e) => {
@@ -381,6 +388,7 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
 };
 
 $('#pins').onchange = (e) => { const id = e.target.dataset.amins; if (!id) return; stopAlerts[id] = +e.target.value; store.set('stopAlerts', stopAlerts); syncStopAlerts([id]); };
+syncStopAlerts();
 
 // ---------- plan ----------
 const place = { from: null, to: null };
