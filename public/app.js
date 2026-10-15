@@ -1,9 +1,35 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
+// Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes'];
+const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
+SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
   get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  set: (k, v) => {
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+    if (SYNCED.includes(k)) { stamps[k] = Date.now(); try { localStorage.setItem('sync:t', JSON.stringify(stamps)); } catch {} clearTimeout(store.timer); store.timer = setTimeout(syncNow, 800); }
+  },
 };
+let syncing = false;
+try { localStorage.setItem('sync:t', JSON.stringify(stamps)); } catch {}
+async function syncNow() {
+  if (syncing) return; syncing = true;
+  try {
+    const out = {};
+    SYNCED.forEach((k) => { if (stamps[k]) out[k] = { v: store.get(k, null), t: stamps[k] }; });
+    const remote = await fetch('/api/sync', { method: 'POST', body: JSON.stringify(out) }).then((r) => r.json());
+    let changed = false;
+    for (const k of SYNCED) {
+      const r = remote[k];
+      if (r && r.t > (stamps[k] || 0)) { localStorage.setItem(k, JSON.stringify(r.v)); stamps[k] = r.t; changed = true; }
+    }
+    if (changed) {
+      localStorage.setItem('sync:t', JSON.stringify(stamps));
+      if (!document.activeElement?.matches('input,select')) location.reload(); // another device changed something: re-read it
+    }
+  } catch {} finally { syncing = false; }
+}
 const api = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
 const post = (p, body) => fetch(p, { method: 'POST', body: JSON.stringify(body) });
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -467,7 +493,8 @@ function tripCard(r, open) {
 }
 
 // ---------- map ----------
-let map, busLayer, stopLayer, meMarker, fitNext = false;
+let map, lineLayer, dotLayer, busLayer, stopLayer, meMarker, fitNext = false;
+const CITY = L.latLngBounds([52.05, -106.80], [52.23, -106.50]); // the map can't be panned or zoomed out beyond Saskatoon
 let mapMode = store.get('mapMode', 'all');
 const markers = new Map(); // vehicle id -> marker, updated in place so buses glide instead of flickering
 
@@ -482,12 +509,17 @@ function syncSeg() {
   $$('.seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
 function initMap() {
   if (map) return;
-  map = L.map('mapbox').setView([52.13, -106.65], 12);
+  map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10 }).setView([52.13, -106.65], 12);
+  const fitCity = () => map.setMinZoom(Math.max(10, map.getBoundsZoom(CITY))); // zoomed out just far enough to see the whole city
+  fitCity(); window.addEventListener('resize', fitCity);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+  lineLayer = L.layerGroup().addTo(map);
+  dotLayer = L.layerGroup().addTo(map);
   busLayer = L.layerGroup().addTo(map);
   stopLayer = L.layerGroup().addTo(map);
   const far = () => $('#mapbox').classList.toggle('far', map.getZoom() < 13);
   map.on('zoomend', far); far();
+  map.on('moveend', drawDots);
   $$('.seg button').forEach((b) => (b.onclick = () => { mapMode = b.dataset.mode; store.set('mapMode', mapMode); $('#maproute').value = ''; fitNext = mapMode === 'pins'; syncSeg(); refreshMap(); }));
   let t;
   $('#maproute').oninput = () => { clearTimeout(t); t = setTimeout(() => { fitNext = true; syncSeg(); refreshMap(); }, 250); };
@@ -499,6 +531,39 @@ function initMap() {
     } catch { toast('Location unavailable'); }
   };
   syncSeg();
+}
+
+// Route lines + stop dots for the routes being shown. Geometry comes from /api/routemap and is cached per route.
+const routeGeo = new Map(); // short -> {color, lines: [[lat, lon]...], stops: [[id, name, lat, lon]...]}
+let geoKey = '', geoSeq = 0, geoStops = new Map();
+async function drawRouteLines(shorts) {
+  shorts = [...shorts].sort();
+  const key = shorts.join(','), mine = ++geoSeq;
+  if (key === geoKey) return;
+  const need = shorts.filter((x) => !routeGeo.has(x));
+  if (need.length) {
+    const d = await api('/api/routemap?routes=' + need.map(encodeURIComponent).join(','));
+    for (const x of need) routeGeo.set(x, d[x] || { lines: [], stops: [] });
+  }
+  if (mine !== geoSeq) return; // a newer selection superseded this one
+  geoKey = key; lineLayer.clearLayers(); geoStops = new Map();
+  for (const x of shorts) {
+    const g = routeGeo.get(x), c = '#' + (g.color || '444');
+    for (const pts of g.lines) L.polyline(pts, { color: c, weight: shorts.length === 1 ? 5 : 3.5, opacity: shorts.length === 1 ? 0.85 : 0.55, lineJoin: 'round' }).addTo(lineLayer);
+    for (const [id, name, lat, lon] of g.stops) if (!geoStops.has(id)) geoStops.set(id, { name, lat, lon, c });
+  }
+  drawDots();
+}
+// Stop dots: always for a few routes, otherwise only once zoomed in (they're too dense for the whole network). Only those in view are drawn.
+function drawDots() {
+  dotLayer.clearLayers();
+  if (map.getZoom() < 14 && geoKey.split(',').length > 3) return;
+  const view = map.getBounds().pad(0.1), r = map.getZoom() >= 15 ? 5 : 3.5;
+  for (const [id, s] of geoStops) if (view.contains([s.lat, s.lon])) L.circleMarker([s.lat, s.lon], { radius: r, color: s.c, weight: 2, fillColor: '#fff', fillOpacity: 1 }).bindPopup(`<b>${esc(s.name)}</b><br>Stop ${esc(id)}`).addTo(dotLayer);
+}
+async function geoRoutes(rq, show) { // which routes to draw: the searched one, your pinned ones, or whatever is running in view
+  if (rq) { allRoutes ||= await api('/api/routes'); return allRoutes.filter((r) => num(r.short) === num(rq)).map((r) => r.short); }
+  return mapMode === 'pins' ? [...pinRoutes] : [...new Set(show.map((b) => b.route).filter(Boolean))];
 }
 
 async function refreshMap() {
@@ -515,6 +580,7 @@ async function refreshMap() {
     else markers.set(b.id, L.marker([b.lat, b.lon], { icon: busIcon(b) }).bindPopup(busPopup(b)).addTo(busLayer));
   }
   for (const [id, m] of markers) if (!seen.has(id)) { busLayer.removeLayer(m); markers.delete(id); }
+  geoRoutes(rq, show).then(drawRouteLines).catch(() => {});
 
   stopLayer.clearLayers();
   for (const p of pins) {
@@ -544,3 +610,5 @@ $('#alerts').onclick = (e) => e.target.closest('[data-editroutes]') && openRoute
 
 refreshPins(); refreshNearby();
 setInterval(() => { refreshPins(); refreshNearby(); if (map && !$('#map').hidden) refreshMap(); }, 20000);
+syncNow(); setInterval(syncNow, 30000);
+document.addEventListener('visibilitychange', () => !document.hidden && syncNow());

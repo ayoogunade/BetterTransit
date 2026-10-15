@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { parse } = require('csv-parse/sync');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const AdmZip = require('adm-zip');
 const GtfsRt = require('gtfs-realtime-bindings').transit_realtime;
 
@@ -19,7 +20,7 @@ const read = (f) =>
   parse(fs.readFileSync(path.join(GTFS_DIR, f)), { columns: true, skip_empty_lines: true, trim: true });
 const toSecs = (t) => { const [h, m, s] = t.split(':').map(Number); return h * 3600 + m * 60 + s; };
 
-let stops, childrenOf, routes, trips, calendar, calDates, stopTimesByStop, tripStops, plan;
+let stops, childrenOf, routes, trips, calendar, calDates, stopTimesByStop, tripStops, plan, shapes, routeMapCache;
 function loadStatic() {
   stops = read('stops.txt'); // includes hubs (location_type 1); arrivals() merges a hub's child stops
   childrenOf = {};
@@ -37,6 +38,10 @@ function loadStatic() {
   }
   for (const sts of Object.values(tripStops)) sts.sort((a, b) => a.seq - b.seq);
   plan = require('./planner')({ stops, tripStops, trips });
+  shapes = {}; routeMapCache = new Map(); // shape_id -> [[lat, lon], ...] (rounded to ~1 m)
+  const pts = {};
+  for (const r of read('shapes.txt')) (pts[r.shape_id] ||= []).push([+r.shape_pt_sequence, +r.shape_pt_lat, +r.shape_pt_lon]);
+  for (const [id, list] of Object.entries(pts)) shapes[id] = list.sort((a, b) => a[0] - b[0]).map(([, la, lo]) => [+la.toFixed(5), +lo.toFixed(5)]);
 }
 
 // Download the city's schedule zip if ours is missing or older than a day; reload only if it changed.
@@ -204,6 +209,22 @@ async function tripTimeline(tripId) {
   };
 }
 
+// A route's drawn path(s) and stops for the map. Each direction contributes its main shape, plus any variant that serves >= 25% as many trips.
+function routeMap(short) {
+  if (routeMapCache.has(short)) return routeMapCache.get(short);
+  const ids = new Set(Object.values(routes).filter((r) => r.route_short_name === short).map((r) => r.route_id));
+  const count = new Map();
+  for (const t of Object.values(trips)) if (ids.has(t.route_id) && shapes[t.shape_id]) { const k = `${t.direction_id}|${t.shape_id}`; count.set(k, (count.get(k) || 0) + 1); }
+  const byDir = {};
+  for (const [k, n] of count) (byDir[k.split('|')[0]] ||= []).push([k.split('|')[1], n]);
+  const lines = Object.values(byDir).flatMap((list) => { const top = Math.max(...list.map((x) => x[1])); return list.filter(([, n]) => n >= top * 0.25).map(([id]) => shapes[id]); });
+  const seen = new Set(), stopList = [];
+  for (const d of search.routeStops(short)) for (const st of d.stops) if (!seen.has(st.id)) { seen.add(st.id); stopList.push([st.id, st.name, st.lat, st.lon]); }
+  const out = { color: (Object.values(routes).find((r) => r.route_short_name === short) || {}).route_color, lines, stops: stopList };
+  routeMapCache.set(short, out);
+  return out;
+}
+
 // ---------- trip planner / geocoding ----------
 const nameOf = (id) => (stops.find((s) => s.stop_id === id) || {}).stop_name || id;
 // tripId -> adjusted stop times (seconds since service-day midnight) from the realtime feed; null = cancelled
@@ -253,12 +274,18 @@ async function planTrip(from, to, departAt) {
 }
 
 // ---------- http ----------
-const json = (res, data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+const json = (res, data, code = 200, req) => {
+  const body = Buffer.from(JSON.stringify(data));
+  const gz = req && body.length > 2048 && /\bgzip\b/.test(req.headers['accept-encoding'] || ''); // the route map is ~700 KB raw
+  res.writeHead(code, { 'content-type': 'application/json', ...(gz && { 'content-encoding': 'gzip' }) });
+  res.end(gz ? zlib.gzipSync(body) : body);
+};
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
+const sync = require('./sync')();
 const push = require('./push')({ arrivals: (id) => arrivals(id) });
-const body = (req) => new Promise((ok, no) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e5) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch (e) { no(e); } }); });
+const body = (req) => new Promise((ok, no) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch (e) { no(e); } }); });
 
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
@@ -277,6 +304,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/nearby') return json(res, await nearby(+u.searchParams.get('lat'), +u.searchParams.get('lon'), (u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if ((m = p.match(/^\/api\/trip\/(.+)$/))) { const t = await tripTimeline(decodeURIComponent(m[1])); return t ? json(res, t) : json(res, { error: 'not found' }, 404); }
     if (p === '/api/vehicles') return json(res, await vehicles((u.searchParams.get('routes') || '').split(',').filter(Boolean)));
+    if (p === '/api/sync') return json(res, sync.merge(req.method === 'POST' ? await body(req) : {}));
     if (p === '/api/push/key') return json(res, { key: push.publicKey });
     if (p === '/api/push/watch' && req.method === 'POST') { push.watch(await body(req)); return json(res, { ok: true }); }
     if (p === '/api/push/unwatch' && req.method === 'POST') { push.unwatch(await body(req)); return json(res, { ok: true }); }
@@ -288,6 +316,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0));
     }
     if (p === '/api/alerts') return json(res, await alerts());
+    if (p === '/api/routemap') return json(res, Object.fromEntries((u.searchParams.get('routes') || '').split(',').filter(Boolean).slice(0, 80).map((r) => [r, routeMap(r)])), 200, req);
     if (p === '/api/routes') return json(res, search.routeList());
     const file = path.join(__dirname, 'public', p === '/' ? 'index.html' : p);
     if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file)) return json(res, { error: 'not found' }, 404);
