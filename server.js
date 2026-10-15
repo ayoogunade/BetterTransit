@@ -129,14 +129,40 @@ async function arrivalsAt(stopId) {
 }
 
 // ---------- vehicles / alerts ----------
+const lastBearing = new Map(); // vehicle id -> last known heading, for buses that report 0 while stopped
+const nextStopCache = new WeakMap();
+async function nextStops() { // tripId -> {stop, time} of the first upcoming stop prediction
+  const msg = await feed('TripUpdate/TripUpdates.pb');
+  if (nextStopCache.has(msg)) return nextStopCache.get(msg);
+  const now = Date.now() / 1000, out = new Map();
+  for (const e of msg.entity) {
+    const tu = e.tripUpdate; if (!tu) continue;
+    const u = (tu.stopTimeUpdate || []).find((x) => Number((x.arrival || x.departure || {}).time) > now - 30);
+    if (u) out.set(tu.trip.tripId, { stop: u.stopId, time: Number((u.arrival || u.departure).time) });
+  }
+  nextStopCache.set(msg, out);
+  return out;
+}
+
 async function vehicles(routeFilter) {
+  const next = await nextStops();
+  const stopName = (id) => (stops.find((x) => x.stop_id === id) || {}).stop_name;
   const out = [];
   for (const e of (await feed('Vehicle/VehiclePositions.pb')).entity) {
     const v = e.vehicle; if (!v || !v.position) continue;
     const t = trips[v.trip && v.trip.tripId] || {};
     const r = routes[t.route_id] || routes[v.trip && v.trip.routeId] || {};
     if (routeFilter.length && !routeFilter.includes(r.route_short_name)) continue;
-    out.push({ id: v.vehicle && v.vehicle.id, lat: v.position.latitude, lon: v.position.longitude, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign });
+    const id = v.vehicle && v.vehicle.id;
+    const { bearing, speed } = v.position;
+    if (bearing || speed > 0.5) lastBearing.set(id, bearing || 0);
+    const n = next.get(v.trip && v.trip.tripId);
+    out.push({
+      id, label: v.vehicle && v.vehicle.label, lat: v.position.latitude, lon: v.position.longitude,
+      bearing: lastBearing.has(id) ? lastBearing.get(id) : null,
+      route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign,
+      next: n && { stop: stopName(n.stop), time: n.time },
+    });
   }
   return out;
 }
@@ -202,16 +228,11 @@ async function planTrip(from, to, departAt) {
   };
 }
 
-async function geocode(q) {
-  const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=5&countrycodes=ca&viewbox=-106.85,52.25,-106.45,52.0&bounded=1&q=' + encodeURIComponent(q);
-  const res = await fetch(url, { headers: { 'user-agent': 'BetterTransit-personal/1.0' } });
-  return (await res.json()).map((r) => ({ name: r.display_name.split(',').slice(0, 3).join(','), lat: +r.lat, lon: +r.lon }));
-}
-
 // ---------- http ----------
 const json = (res, data, code = 200) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
+const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const push = require('./push')({ arrivals: (id) => arrivals(id) });
 const body = (req) => new Promise((ok, no) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e5) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch (e) { no(e); } }); });
 
@@ -233,13 +254,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/push/key') return json(res, { key: push.publicKey });
     if (p === '/api/push/watch' && req.method === 'POST') { push.watch(await body(req)); return json(res, { ok: true }); }
     if (p === '/api/push/unwatch' && req.method === 'POST') { push.unwatch(await body(req)); return json(res, { ok: true }); }
-    if (p === '/api/geocode') return json(res, await geocode(u.searchParams.get('q') || ''));
+    if (p === '/api/suggest') return json(res, await search.suggest(u.searchParams.get('q') || '', (u.searchParams.get('kinds') || 'route,stop').split(','), u.searchParams.get('session')));
+    if (p === '/api/place') return json(res, await search.placeLatLon(u.searchParams.get('id'), u.searchParams.get('session')));
+    if ((m = p.match(/^\/api\/route\/(.+)\/stops$/))) return json(res, search.routeStops(decodeURIComponent(m[1])));
     if (p === '/api/plan') {
       const ll = (k) => { const [lat, lon] = (u.searchParams.get(k) || '').split(',').map(Number); return { lat, lon }; };
       return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0));
     }
     if (p === '/api/alerts') return json(res, await alerts());
-    if (p === '/api/routes') return json(res, Object.values(routes).map((r) => r.route_short_name).sort());
+    if (p === '/api/routes') return json(res, search.routeList());
     const file = path.join(__dirname, 'public', p === '/' ? 'index.html' : p);
     if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file)) return json(res, { error: 'not found' }, 404);
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });

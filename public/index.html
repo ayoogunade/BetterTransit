@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Better Transit</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="favicon.svg">
@@ -15,33 +15,41 @@
 </head>
 <body>
 <header><h1>Better Transit</h1><span id="updated"></span></header>
-<nav>
-  <button data-tab="pinned" class="on">Pinned</button>
-  <button data-tab="plan">Plan</button>
-  <button data-tab="map">Map</button>
-  <button data-tab="alerts">Alerts</button>
-</nav>
 <main>
   <section id="pinned">
-    <label class="when">Notify me when a bus is <select id="mins"><option>3</option><option selected>5</option><option>10</option><option>15</option></select> min away (tap 🔔)</label>
+    <div class="sbox"><input id="pin-search" type="search" placeholder="Search a route (60) or stop" autocomplete="off"><div class="suggest" id="pin-suggest"></div></div>
     <div id="pins"></div>
-    <input id="search" placeholder="Add a stop: name or stop number" autocomplete="off">
-    <div id="results"></div>
+    <label class="opt">Notify me when a bus is <select id="mins"><option>3</option><option selected>5</option><option>10</option><option>15</option></select> min away (tap 🔔)</label>
   </section>
+
   <section id="plan" hidden>
-    <div class="place"><input id="from" placeholder="From (address or place)" autocomplete="off"><button id="here">📍</button></div>
-    <div class="results" id="from-results"></div>
-    <div class="place"><input id="to" placeholder="To (address or place)" autocomplete="off"></div>
-    <div class="results" id="to-results"></div>
-    <label class="when">Leave <input type="datetime-local" id="when"> <button id="now">Now</button></label>
+    <div class="route-inputs">
+      <div class="sbox"><input id="from" type="search" placeholder="From: address, place, stop or route" autocomplete="off"><div class="suggest" id="from-suggest"></div></div>
+      <button id="swap" title="Swap" aria-label="Swap from and to">⇅</button>
+      <div class="sbox"><input id="to" type="search" placeholder="To: address, place, stop or route" autocomplete="off"><div class="suggest" id="to-suggest"></div></div>
+    </div>
+    <label class="opt">Leave <input type="datetime-local" id="when"> <button id="now">Now</button></label>
     <div id="trip"></div>
   </section>
+
   <section id="map" hidden>
-    <label class="when"><input type="checkbox" id="mine" style="width:auto;margin:0"> Only buses on my pinned stops' routes</label>
+    <div class="mapbar">
+      <div class="seg"><button data-mode="all">All</button><button data-mode="pins">My pins</button></div>
+      <input id="maproute" type="search" inputmode="numeric" placeholder="Route #" autocomplete="off">
+      <button id="locate" title="My location" aria-label="My location">📍</button>
+    </div>
     <div id="mapbox"></div>
   </section>
+
   <section id="alerts" hidden></section>
 </main>
+
+<nav class="tabs">
+  <button data-tab="pinned" class="on"><i>📌</i>Pinned</button>
+  <button data-tab="plan"><i>🧭</i>Plan</button>
+  <button data-tab="map"><i>🗺️</i>Map</button>
+  <button data-tab="alerts"><i>⚠️</i>Alerts</button>
+</nav>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
