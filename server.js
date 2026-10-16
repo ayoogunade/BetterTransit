@@ -91,6 +91,13 @@ async function feed(name) {
 
 // ---------- arrivals ----------
 const lastGood = new Map(); // trip|stop -> {time, seen} so predictions don't flicker away
+// A bus that has left stays on the board as Gone for a minute from when we first saw it leave, not from its predicted
+// time (a bus can sit at the stop as Due for a while). at: its time at the stop, which must be recent to start the minute.
+const leftAt = new Map(); // trip|stop -> ms we first saw it gone
+const justLeft = (key, at, now) => {
+  if (!leftAt.has(key)) { if (at <= now - 180) return false; leftAt.set(key, Date.now()); }
+  return Date.now() - leftAt.get(key) < 60000;
+};
 const shape = (tripId, time, live) => {
   const t = trips[tripId] || {};
   const r = routes[t.route_id] || {};
@@ -162,7 +169,7 @@ async function arrivalsAt(stopId) {
     const key = `${st.trip}|${stopId}`, last = lastGood.get(key);
     // the bus is past this stop: the trip's next stop is further on, or it finished (the feed may also drop the passed stop)
     const passed = s && s.at.size > 0 && (s.next == null || s.next > idx);
-    if (passed) { const at = (p && p.time) || (last && last.time); if (at && at > now - 120) out.push({ ...base, time: at, gone: true }); continue; }
+    if (passed) { const at = (p && p.time) || (last && last.time); if (at && justLeft(key, at, now)) out.push({ ...base, time: at, gone: true }); continue; }
     if (p && p.time) {
       lastGood.set(key, { time: p.time, seen: Date.now() });
       const tracked = s.bus || (!!t.block_id && blocks.get(t.block_id) <= sts[0].t);
@@ -173,11 +180,12 @@ async function arrivalsAt(stopId) {
     }
     // the feed dropped the trip. Trips leave the feed when the bus reaches its last stop, so one that was due has arrived;
     // otherwise keep its last prediction for 90s in case that's a hiccup
-    if (last && Date.now() - last.seen < 90000 && (base.ends || last.time <= now + 60)) { if (last.time > now - 120) out.push({ ...base, time: last.time, gone: true }); continue; }
+    if (last && Date.now() - last.seen < 90000 && (base.ends || last.time <= now + 60)) { if (justLeft(key, last.time, now)) out.push({ ...base, time: last.time, gone: true }); continue; }
     if (last && Date.now() - last.seen < 90000) { if (last.time > now - 60) out.push({ ...base, time: last.time, live: true, stale: true, delay: last.time - sched }); continue; }
     if (sched > now - 60) out.push(base); // timetable only
   }
   for (const [k, v] of lastGood) if (Date.now() - v.seen > 90000) lastGood.delete(k);
+  for (const [k, v] of leftAt) if (Date.now() - v > 600000) leftAt.delete(k);
   return out.sort((a, b) => a.time - b.time).slice(0, 12);
 }
 

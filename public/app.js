@@ -316,7 +316,7 @@ function statusOf(a) {
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time'].filter(Boolean).join(' · ');
 }
 const arrivalEta = (a) => (!isComing(a)
-  ? `<span class="eta off">${a.gone ? 'Left' : `<s>${clock(a.sched)}</s>`}${a.gone ? `<span class="sched">${clock(a.time)}</span>` : ''}</span>`
+  ? `<span class="eta off">${a.gone ? 'Gone' : `<s>${clock(a.sched)}</s>`}${a.gone ? `<span class="sched">${clock(a.time)}</span>` : ''}</span>`
   : etaHtml(a.time, `<span class="sched">${a.tracked && !a.stale ? liveDot : ''}${clock(a.time)}</span>`, a.tracked && !a.stale ? '' : 'muted'));
 
 // "Walk 6 min · Leave in 3 min for the 45 at 3:42", from where you are (only when the stop is within walking distance)
@@ -332,7 +332,6 @@ function catchLine(p, list, dist) {
 
 function stopCard(p, list, nearby = false) {
   list = list.filter((a) => routeOn(a.route));
-  list = [...list.filter((a) => !a.gone), ...list.filter((a) => a.gone)]; // a bus that just left goes last, so the next one leads
   const items = list.slice(0, nearby ? 4 : 6).map((a, i) => `
     <div class="row ${i ? '' : 'first'} ${isComing(a) ? '' : 'off'} ${a.ends ? 'dropoff' : ''}" role="button" tabindex="0" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       ${badge(a.route, a.color)}
