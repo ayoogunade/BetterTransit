@@ -14,7 +14,8 @@ const save = (f, v) => { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSyn
 module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
-  webpush.setVapidDetails('mailto:local@localhost', keys.publicKey, keys.privateKey);
+  // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
+  webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://34-46-182-45.sslip.io', keys.publicKey, keys.privateKey);
 
   let watches = loadJson(WATCHES, []); // {sub, stopId, tripId, minutes, route, headsign, stopName} or {sub, stopId, standing, routes, minutes, stopName, sent}
   const same = (a, b) => a.sub.endpoint === b.sub.endpoint && a.stopId === b.stopId && a.tripId === b.tripId;
