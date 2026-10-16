@@ -1,7 +1,10 @@
 // Offline fallback: last-good app files and API responses (network is always tried first).
-const SHELL = 'shell-v5';
+const SHELL = 'shell-v6';
 const FILES = ['/', '/app.js', '/icons-data.js', '/style.css', '/manifest.json', '/favicon.svg'];
-self.addEventListener('install', (e) => e.waitUntil(caches.open(SHELL).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => {})))).then(() => self.skipWaiting())));
+// a redirected response is the login page standing in for a signed-out request: never cache it as the app
+const good = (r) => r.ok && !r.redirected;
+const put = (store, req, r) => { if (good(r)) { const copy = r.clone(); caches.open(store).then((c) => c.put(req, copy)); } return r; };
+self.addEventListener('install', (e) => e.waitUntil(Promise.all(FILES.map((f) => fetch(f).then((r) => put(SHELL, f, r)).catch(() => {}))).then(() => self.skipWaiting())));
 self.addEventListener('activate', (e) => e.waitUntil(clients.claim()));
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
@@ -11,7 +14,7 @@ self.addEventListener('fetch', (e) => {
   const isApi = url.pathname.startsWith('/api/');
   // Network first for everything (always fresh when online); the cache is only the offline fallback.
   const store = isApi ? 'api' : SHELL;
-  e.respondWith(fetch(e.request).then((r) => { if (r.ok) { const copy = r.clone(); caches.open(store).then((c) => c.put(e.request, copy)); } return r; }).catch(() => caches.match(e.request)));
+  e.respondWith(fetch(e.request).then((r) => put(store, e.request, r)).catch(() => caches.match(e.request)));
 });
 
 self.addEventListener('push', (e) => {

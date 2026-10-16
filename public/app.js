@@ -27,8 +27,9 @@ async function syncNow() {
     if (changed) { localStorage.setItem('sync:t', JSON.stringify(stamps)); applySynced(); }
   } catch {} finally { syncing = false; }
 }
-const api = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
-const post = (p, body) => fetch(p, { method: 'POST', body: JSON.stringify(body) });
+const signedOut = (r) => { if (r.status === 401) location.href = '/login'; return r; }; // the server's sign-in cookie is gone
+const api = (p) => fetch(p).then(signedOut).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const post = (p, body) => fetch(p, { method: 'POST', body: JSON.stringify(body) }).then(signedOut);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (s) => parseInt(s, 10);
 // Lucide icons as inline SVG (paths generated into icons-data.js by `npm run icons`). They follow the text colour and size (1em).

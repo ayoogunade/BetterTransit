@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · Better Transit</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="favicon.svg">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#0a7d3c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="stylesheet" href="style.css">
+<style>
+  .login { max-width: 360px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 15vh) 16px 24px; }
+  .login h1 { margin-bottom: 4px; }
+  .login p { color: var(--muted); margin: 0 0 16px; font-size: 14px; }
+  .login input[type=password] { width: 100%; padding: 13px 14px; font-size: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); appearance: none; -webkit-appearance: none; }
+  .login .btn { width: 100%; margin-top: 12px; padding: 13px; font-size: 16px; background: var(--accent); border-color: var(--accent); color: #fff; }
+  .login .err { color: var(--bad); font-size: 14px; margin: 10px 0 0; }
+  .login .err:empty { display: none; }
+</style>
+</head>
+<body>
+<main class="login">
+  <h1>Better Transit</h1>
+  <p>Sign in once on this device and it stays signed in.</p>
+  <form class="card" method="post" action="/login">
+    <input type="hidden" name="username" value="ayo" autocomplete="username">
+    <input type="password" name="password" placeholder="Password" autocomplete="current-password" required autofocus aria-label="Password">
+    <button class="btn" type="submit">Sign in</button>
+    <p class="err" id="err" role="alert"></p>
+  </form>
+</main>
+<script>
+  const e = new URLSearchParams(location.search).get('e');
+  document.getElementById('err').textContent = e === 'locked' ? 'Too many tries. Wait 15 minutes and try again.' : e ? 'Wrong password.' : '';
+</script>
+</body>
+</html>

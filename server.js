@@ -337,13 +337,26 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
 const push = require('./push')({ arrivals: (id) => arrivals(id) });
-const body = (req) => new Promise((ok, no) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch (e) { no(e); } }); });
+const auth = require('./auth')();
+const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
+const body = async (req) => JSON.parse((await text(req)) || '{}');
 
 const server = http.createServer(async (req, res) => {
   let u;
   try { u = new URL(req.url, 'http://x'); } catch { return json(res, { error: 'bad request' }, 400); } // e.g. a path of "//" must not crash the server
   const p = u.pathname;
   try {
+    if (p === '/login' && req.method === 'POST') {
+      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress; // Caddy sets it
+      const r = await auth.login(new URLSearchParams(await text(req)).get('password'), ip, req.headers['x-forwarded-proto'] === 'https');
+      res.writeHead(303, r && r !== 'locked' ? { location: '/', 'set-cookie': r } : { location: `/login?e=${r || 1}` });
+      return res.end();
+    }
+    if (!auth.check(req, p)) {
+      if (p.startsWith('/api/')) return json(res, { error: 'signed out' }, 401);
+      res.writeHead(302, { location: '/login' });
+      return res.end();
+    }
     if (p === '/api/stops') {
       const q = (u.searchParams.get('q') || '').toLowerCase();
       const lat = +u.searchParams.get('lat'), lon = +u.searchParams.get('lon');
@@ -371,7 +384,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/alerts') return json(res, await alerts());
     if (p === '/api/routemap') return json(res, Object.fromEntries((u.searchParams.get('routes') || '').split(',').filter(Boolean).slice(0, 80).map((r) => [r, routeMap(r)])), 200, req);
     if (p === '/api/routes') return json(res, search.routeList());
-    const file = path.join(__dirname, 'public', p === '/' ? 'index.html' : p);
+    const file = path.join(__dirname, 'public', p === '/' ? 'index.html' : p === '/login' ? 'login.html' : p);
     if (!file.startsWith(path.join(__dirname, 'public')) || !fs.existsSync(file)) return json(res, { error: 'not found' }, 404);
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
     fs.createReadStream(file).pipe(res);
