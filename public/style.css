@@ -24,7 +24,7 @@ main { padding: 4px 14px calc(88px + env(safe-area-inset-bottom)); max-width: 64
 
 /* inputs + search suggestions */
 input, select { font: inherit; color: var(--fg); }
-input[type=search], input[type=datetime-local] { width: 100%; padding: 13px 14px; font-size: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: var(--shadow); appearance: none; -webkit-appearance: none; }
+input[type=search], input[type=datetime-local], input[type=text], input[type=time] { width: 100%; padding: 13px 14px; font-size: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: var(--shadow); appearance: none; -webkit-appearance: none; }
 input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .sbox { position: relative; margin: 8px 0; }
 .suggest:empty { display: none; }
@@ -187,8 +187,9 @@ body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 
 /* routes to show */
 header { align-items: center; }
 .hdr-r { display: flex; align-items: center; gap: 8px; }
-#routes-btn { border: 1px solid var(--line); background: var(--card); border-radius: 10px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; }
-#routes-btn .ic { width: 20px; height: 20px; }
+#routes-btn, #devices-btn { border: 1px solid var(--line); background: var(--card); border-radius: 10px; width: 38px; height: 38px; display: flex; align-items: center; justify-content: center; }
+#devices-btn[hidden] { display: none; }
+#routes-btn .ic, #devices-btn .ic { width: 20px; height: 20px; }
 .sg.off { opacity: .5; }
 .sg .badge { flex: none; }
 .filterbar { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; margin: 6px 2px; }
@@ -320,3 +321,17 @@ header { align-items: center; }
 .alert .readmore .ic { width: 18px; height: 18px; transition: transform .2s; }
 .alert.open .readmore .ic { transform: rotate(180deg); }
 #pins .filterbar { margin-top: 2px; }
+
+/* commutes + signed-in devices */
+.cbtn { border: 0; background: none; color: var(--muted); padding: 6px; min-width: 36px; min-height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: none; }
+.cbtn.on { color: var(--accent); }
+.cbtn .ic { width: 20px; height: 20px; }
+.cbtn.sure { color: var(--bad); font-size: 13px; font-weight: 600; width: auto; padding: 6px 10px; }
+.sg .t b .chip { vertical-align: 1px; }
+.cform { padding-bottom: 14px; }
+.cform input[type=text] { width: calc(100% - 28px); margin: 0 14px; box-shadow: none; }
+.cform .seg.wide button { padding: 10px 0; font-size: 13px; }
+.cform .trow { display: flex; align-items: center; gap: 10px; margin: 0 14px; color: var(--muted); }
+.cform .trow input { flex: 1; min-width: 0; box-shadow: none; }
+.cform .btnrow { margin: 16px 14px 0; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }

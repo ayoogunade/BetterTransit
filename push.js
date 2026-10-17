@@ -1,6 +1,7 @@
 // "Notify me when this bus is N minutes away": Web Push with VAPID keys, watches persisted to disk.
-// Two kinds of watch: one trip at a stop (dropped once it has fired), or a standing stop watch ({standing: true, routes}) that
-// fires once for every bus of the chosen routes at that stop and stays until removed.
+// Three kinds of watch: one trip at a stop (dropped once it has fired), a standing stop watch ({standing: true, routes}) that
+// fires once for every bus of the chosen routes at that stop and stays until removed, and a commute ({commute: true, from, to,
+// days, startMin, endMin}) that plans the trip during its time window and says when to leave for the next bus.
 const fs = require('fs');
 const path = require('path');
 const webpush = require('web-push');
@@ -11,14 +12,39 @@ const WATCHES = path.join(DIR, 'watches.json');
 const loadJson = (f, d) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return d; } };
 const save = (f, v) => { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSync(f, JSON.stringify(v)); };
 
-module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
+// Browsers only hand out subscriptions on their vendor's push service. Anything else would make the server POST to an address of the caller's choosing.
+const PUSH_HOSTS = ['googleapis.com', 'mozilla.com', 'push.apple.com', 'notify.windows.com'];
+const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const point = (p) => !!p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
+
+// A reason this watch request is unacceptable, or null. Checked by the server before watch().
+function invalid(w) {
+  try {
+    const u = new URL(w.sub.endpoint);
+    if (u.protocol !== 'https:' || !PUSH_HOSTS.some((h) => u.hostname === h || u.hostname.endsWith('.' + h))) return 'unknown push service';
+  } catch { return 'bad subscription'; }
+  if (!w.sub.keys || typeof w.sub.keys.p256dh !== 'string' || typeof w.sub.keys.auth !== 'string') return 'bad subscription';
+  if (!int(w.minutes, 1, 120)) return 'bad minutes';
+  if (w.commute) {
+    if (typeof w.commuteId !== 'string' || !w.commuteId) return 'bad commute';
+    if (!point(w.from) || !point(w.to)) return 'bad places';
+    if (!Array.isArray(w.days) || !w.days.length || !w.days.every((d) => int(d, 0, 6))) return 'bad days';
+    if (!int(w.startMin, 0, 1439) || !int(w.endMin, 0, 1439) || w.endMin < w.startMin) return 'bad times';
+  } else if (typeof w.stopId !== 'string' || !w.stopId) return 'bad stop';
+  return null;
+}
+
+module.exports = function createPush({ arrivals, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
   webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://34-46-182-45.sslip.io', keys.publicKey, keys.privateKey);
 
   let watches = loadJson(WATCHES, []); // {sub, stopId, tripId, minutes, route, headsign, stopName} or {sub, stopId, standing, routes, minutes, stopName, sent}
-  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && a.stopId === b.stopId && a.tripId === b.tripId;
+  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && a.stopId === b.stopId && a.tripId === b.tripId && a.commuteId === b.commuteId;
+  const clock = (t) => { const d = new Date((t + tzOffsetSec) * 1000), h = d.getUTCHours(); return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+  // watches that notify once per trip remember which ones, for six hours
+  const prune = (w, now) => { w.sent ||= {}; for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip]; };
 
   // true when the push service says this subscription no longer exists (the app was uninstalled or permission revoked)
   async function send(w, payload) {
@@ -28,8 +54,7 @@ module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
 
   // Standing stop watch: notify once per trip when a bus on the chosen routes comes within the window. Returns false if the watch should be dropped.
   async function pingStop(w, list, now) {
-    w.sent ||= {};
-    for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip];
+    prune(w, now);
     for (const a of list) {
       if (w.routes && !w.routes.includes(a.route)) continue;
       if (a.cancelled || a.skipped || a.gone || a.ends) continue; // not coming, or not boardable here
@@ -41,36 +66,61 @@ module.exports = function createPush({ arrivals, checkEveryMs = 20000 }) {
     return true;
   }
 
+  // Commute: while its window is open, plan the trip about once a minute and send one "leave in N min" per bus. Returns false if the watch should be dropped.
+  async function pingCommute(w, now) {
+    const local = new Date((now + tzOffsetSec) * 1000), min = local.getUTCHours() * 60 + local.getUTCMinutes();
+    if (!w.days.includes(local.getUTCDay()) || min < w.startMin || min > w.endMin || now - (w.checkedAt || 0) < 60) return true;
+    w.checkedAt = now;
+    const opts = await plan(w.from, w.to).catch(() => null);
+    const o = opts && opts[0], ride = o && o.legs.find((l) => l.type === 'ride');
+    prune(w, now);
+    if (!ride || w.sent[ride.trip] || o.leave - now > w.minutes * 60) return true;
+    w.sent[ride.trip] = now;
+    const mins = Math.max(0, Math.round((o.leave - now) / 60));
+    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}` }));
+  }
+
   async function check() {
     const now = Date.now() / 1000;
-    const stopIds = [...new Set(watches.map((w) => w.stopId))];
+    const stopIds = [...new Set(watches.filter((w) => !w.commute).map((w) => w.stopId))];
     const arr = Object.fromEntries(await Promise.all(stopIds.map(async (s) => [s, await arrivals(s).catch(() => null)])));
-    const keep = [];
-    for (const w of watches) {
-      if (w.standing) { if (!arr[w.stopId] || (await pingStop(w, arr[w.stopId], now))) keep.push(w); continue; }
+    // Sends are slow, and watch()/unwatch() can run while we wait on them, so only remove the watches this pass finished with;
+    // replacing the whole list would throw away anything added in the meantime.
+    const drop = new Set();
+    for (const w of [...watches]) {
+      if (w.commute) { if (!(await pingCommute(w, now))) drop.add(w); continue; }
+      if (w.standing) { if (arr[w.stopId] && !(await pingStop(w, arr[w.stopId], now))) drop.add(w); continue; }
       const hit = (arr[w.stopId] || []).find((a) => a.trip === w.tripId);
-      if (!arr[w.stopId]) { keep.push(w); continue; } // feed hiccup: try again next tick
-      if (!hit) { if (!w.missing) w.missing = now; if (now - w.missing < 300) keep.push(w); continue; } // trip left the feed: give up after 5 min
+      if (!arr[w.stopId]) continue; // feed hiccup: try again next tick
+      if (!hit) { if (!w.missing) w.missing = now; if (now - w.missing >= 300) drop.add(w); continue; } // trip left the feed: give up after 5 min
       delete w.missing;
-      if (hit.gone) continue; // it already passed the stop
+      if (hit.gone) { drop.add(w); continue; } // it already passed the stop
       if (hit.cancelled || hit.skipped) { // tell them now so they don't keep waiting
         await send(w, { title: `Route ${w.route} ${hit.cancelled ? 'cancelled' : 'not stopping here'}`, body: `${w.headsign || ''} at ${w.stopName}${hit.cancelled ? ' was cancelled' : ' is skipping this stop (detour)'}` });
-        continue;
+        drop.add(w); continue;
       }
-      if (hit.time - now > w.minutes * 60) { keep.push(w); continue; }
+      if (hit.time - now > w.minutes * 60) continue;
       const mins = Math.max(0, Math.round((hit.time - now) / 60));
       await send(w, { title: `Route ${w.route} ${mins <= 0 ? 'is due' : `in ${mins} min`}`, body: `${w.headsign || ''} at ${w.stopName}${hit.live ? '' : ' (scheduled)'}` });
+      drop.add(w);
     }
-    watches = keep;
+    watches = watches.filter((w) => !drop.has(w));
     save(WATCHES, watches);
   }
-  setInterval(() => check().catch((e) => console.error('push check', e.message)), checkEveryMs).unref();
+  let busy = false; // a slow pass must not overlap the next one, or the same bus would be announced twice
+  setInterval(() => { if (busy) return; busy = true; check().catch((e) => console.error('push check', e.message)).finally(() => { busy = false; }); }, checkEveryMs).unref();
 
   return {
     publicKey: keys.publicKey,
-    watch(w) { watches = watches.filter((x) => !same(x, w)); watches.push(w); save(WATCHES, watches); },
+    watch(w) { // the app re-registers its watches on every launch: keep what this one already announced
+      const old = watches.find((x) => same(x, w));
+      if (old && old.sent) w.sent = old.sent;
+      watches = watches.filter((x) => x !== old); watches.push(w); save(WATCHES, watches);
+    },
     unwatch(w) { watches = watches.filter((x) => !same(x, w)); save(WATCHES, watches); },
+    dropSession(sid) { watches = watches.filter((x) => !sid || x.sid !== sid); save(WATCHES, watches); }, // a signed-out device stops getting pushes
     has: (w) => watches.some((x) => same(x, w)),
+    invalid,
     check,
   };
 };

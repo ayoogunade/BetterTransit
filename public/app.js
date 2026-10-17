@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -304,16 +304,21 @@ const ALERT_MINS = [3, 5, 10, 15];
 // How sure we are about a bus, in words: cancelled / detour / just left / signal lost / not tracked, else stops away and late/early/on time
 const isComing = (a) => !a.cancelled && !a.skipped && !a.gone;
 const canBoard = (a) => isComing(a) && !a.ends; // a trip ending at this stop only drops off
+// From the history: how this bus tends to run at this stop at this hour
+const usualText = (a) => {
+  const u = a.usual;
+  return !u ? '' : u.late >= 30 ? `late ${u.late}% of the time here` : Math.abs(u.avg) < 1 ? 'usually on time' : u.avg > 0 ? `usually ${u.avg} min late` : `usually ${-u.avg} min early`;
+};
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
   if (a.skipped) return '<em class="bad">Not stopping here (detour)</em>';
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
   const ends = a.ends ? 'Drop-off only' : '';
-  if (!a.tracked) return [ends, 'Not tracked yet'].filter(Boolean).join(' · ') || 'Not tracked yet · timetable time';
+  if (!a.tracked) return [ends, 'Not tracked yet', usualText(a)].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
   return [ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
-    d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time'].filter(Boolean).join(' · ');
+    d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
 }
 const arrivalEta = (a) => (!isComing(a)
   ? `<span class="eta off">${a.gone ? 'Gone' : `<s>${clock(a.sched)}</s>`}${a.gone ? `<span class="sched">${clock(a.time)}</span>` : ''}</span>`
@@ -464,15 +469,19 @@ async function setStopAlert(id, mins) {
 }
 // Alerts are synced between devices but each device has its own push subscription, so make the server's watches for THIS device
 // match the shared list: drop the ones removed elsewhere, (re)register the rest with the current minutes / route filter.
-async function syncStopAlerts(ids = Object.keys(stopAlerts)) {
+// wanted: id -> the watch for it; gone(id): what identifies a watch to remove. hereKey remembers which ids this device has registered.
+// Returns true once this device's watches are registered.
+async function mirrorWatches(hereKey, wanted, gone, create = false) {
   try {
-    const sub = await getSub(false);
-    if (!sub) return;
-    for (const id of store.get('alertsHere', [])) if (!(id in stopAlerts)) await post('/api/push/unwatch', { sub, stopId: id });
-    for (const id of ids) await post('/api/push/watch', { ...stopWatch(id), sub });
-    store.set('alertsHere', Object.keys(stopAlerts));
-  } catch {}
+    const sub = await getSub(create);
+    if (!sub) return false;
+    for (const id of store.get(hereKey, [])) if (!(id in wanted)) await post('/api/push/unwatch', { sub, ...gone(id) });
+    for (const w of Object.values(wanted)) await post('/api/push/watch', { ...w, sub });
+    store.set(hereKey, Object.keys(wanted));
+    return true;
+  } catch { return false; }
 }
+const syncStopAlerts = () => mirrorWatches('alertsHere', Object.fromEntries(Object.keys(stopAlerts).map((id) => [id, stopWatch(id)])), (id) => ({ stopId: id }));
 
 // One bell per stop opens this: how many minutes ahead, every bus at the stop (pinned stops only), or just one of the next buses.
 function openAlertSheet(stop, arrivals) {
@@ -639,13 +648,14 @@ async function planTrip() {
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
   trips = r;
-  $('#trip').innerHTML = r.map((o, i) => tripCard(o, i)).join('');
+  $('#trip').innerHTML = r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
 }
 let trips = [];
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
 const tripPinLabel = (l) => `${icon('pin')} ${isStopPinned(l.board) ? 'Stop pinned' : 'Pin this stop'}`;
 $('#trip').onclick = async (e) => {
   const b = e.target.closest('button');
+  if (b?.dataset.savecommute !== undefined) return openCommuteSheet();
   if (b?.dataset.tpin) { const l = firstRide(+b.dataset.tpin); toggleStopPin(l.board); b.classList.toggle('on', isStopPinned(l.board)); return void (b.innerHTML = tripPinLabel(l)); }
   if (b?.dataset.twatch) {
     const l = firstRide(+b.dataset.twatch);
@@ -673,6 +683,99 @@ function tripCard(r, i) {
     <div class="meta"><span class="leavein" data-leavein="${r.leave}">${leaveText(r.leave)}</span><span>${icon('timer')} ${Math.round((r.arrive - r.leave) / 60)} min</span>${rides.length > 1 ? `<span>${icon('repeat')} ${rides.length - 1}</span>` : ''}<span>${icon('footprints')} ${walk} min</span><span class="rb">${rides.map((l) => badge(l.route, l.color)).join('')}</span></div>
     <div class="legs">${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}${act}</div></div>`;
 }
+
+// ---------- commutes ----------
+// A saved trip that pushes "leave in N min" while its time window is open. Synced like pins; each device registers its own push watch.
+let commutes = store.get('commutes', []); // {id, name, from: {lat, lon, name}, to: {lat, lon, name}, days: [0-6], startMin, endMin, minutes, off}
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const minText = (m) => new Date(2000, 0, 1, 0, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const fromHhmm = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+const daysText = (d) => { const k = [...d].sort().join(); return k === '1,2,3,4,5' ? 'Weekdays' : k === '0,6' ? 'Weekends' : d.length === 7 ? 'Every day' : [...d].sort().map((x) => DAYS[x]).join(' '); };
+const commuteWatch = (c) => ({ commute: true, commuteId: c.id, name: c.name, from: { lat: c.from.lat, lon: c.from.lon }, to: { lat: c.to.lat, lon: c.to.lon }, minutes: c.minutes, days: c.days, startMin: c.startMin, endMin: c.endMin });
+const syncCommutes = (create = false) => mirrorWatches('commutesHere', Object.fromEntries(commutes.filter((c) => !c.off).map((c) => [c.id, commuteWatch(c)])), (id) => ({ commuteId: id }), create);
+const saveCommutes = (create) => { store.set('commutes', commutes); renderCommutes(); return syncCommutes(create); };
+function renderCommutes() {
+  $('#commutes').innerHTML = commutes.length ? '<div class="section-title">Commutes</div><div class="card">' + commutes.map((c) => `<div class="sg" role="button" tabindex="0" data-cid="${esc(c.id)}"><span class="ico">${icon('route')}</span>
+    <span class="t"><b>${esc(c.name)}</b><small>${daysText(c.days)} · ${minText(c.startMin)}–${minText(c.endMin)} · ${c.off ? 'alerts off' : `${c.minutes} min before leaving`}</small></span>
+    <button class="cbtn ${c.off ? '' : 'on'}" data-cid="${esc(c.id)}" data-act="bell" aria-label="${c.off ? 'Turn alerts on for' : 'Turn alerts off for'} ${esc(c.name)}">${icon(c.off ? 'bell-off' : 'bell-ring')}</button>
+    <button class="cbtn" data-cid="${esc(c.id)}" data-act="del" aria-label="Remove ${esc(c.name)}">${icon('x')}</button></div>`).join('') + '</div>' : '';
+}
+$('#commutes').onclick = (e) => {
+  const el = e.target.closest('[data-cid]'), act = e.target.closest('[data-act]')?.dataset.act, c = el && commutes.find((x) => x.id === el.dataset.cid);
+  if (!c) return;
+  if (act === 'bell') { c.off = !c.off; return void saveCommutes(!c.off); }
+  if (act === 'del') {
+    const i = commutes.indexOf(c); commutes.splice(i, 1); saveCommutes();
+    return toast(`Removed ${c.name}`, 'Undo', () => { commutes.splice(Math.min(i, commutes.length), 0, c); saveCommutes(); });
+  }
+  place.from = { lat: c.from.lat, lon: c.from.lon }; place.to = { lat: c.to.lat, lon: c.to.lon }; // tap the row to plan it now
+  $('#from').value = c.from.name; $('#to').value = c.to.name;
+  planTrip();
+};
+// Save the trip on screen as a commute: which days and hours to watch, and how long before you need to leave to be told
+function openCommuteSheet() {
+  const from = { ...place.from, name: $('#from').value }, to = { ...place.to, name: $('#to').value };
+  const c = { name: `To ${to.name}`, days: [1, 2, 3, 4, 5], startMin: 420, endMin: 540, minutes: 5 };
+  const { el, close } = sheetShell('', { mini: true });
+  const draw = () => {
+    el.innerHTML = `<div class="sheet-bar"><div><b>Commute alerts</b><small>${esc(from.name)} ${icon('arrow-right')} ${esc(to.name)}</small></div><button data-close class="done">Cancel</button></div>
+      <div class="sheet-list cform">
+        <label class="alabel" for="cname">Name</label><input id="cname" type="text" value="${esc(c.name)}" maxlength="40" autocomplete="off">
+        <div class="alabel">Days</div>
+        <div class="seg wide" role="group" aria-label="Days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button data-day="${d}" class="${c.days.includes(d) ? 'on' : ''}" aria-pressed="${c.days.includes(d)}">${DAYS[d]}</button>`).join('')}</div>
+        <div class="alabel">Alert me between</div>
+        <div class="trow"><input id="cstart" type="time" value="${hhmm(c.startMin)}" aria-label="From"><span>and</span><input id="cend" type="time" value="${hhmm(c.endMin)}" aria-label="Until"></div>
+        <div class="alabel">Tell me before I need to leave</div>
+        <div class="seg wide" role="group" aria-label="Minutes before leaving">${ALERT_MINS.map((n) => `<button data-mins="${n}" class="${n === c.minutes ? 'on' : ''}" aria-pressed="${n === c.minutes}">${n} min</button>`).join('')}</div>
+        <div class="btnrow"><button class="btn primary" data-save>${icon('bell-ring')} Save commute</button></div>
+      </div>`;
+    el.querySelector('#cname').oninput = (e) => { c.name = e.target.value; };
+    el.querySelector('#cstart').onchange = (e) => { if (e.target.value) c.startMin = fromHhmm(e.target.value); };
+    el.querySelector('#cend').onchange = (e) => { if (e.target.value) c.endMin = fromHhmm(e.target.value); };
+  };
+  draw();
+  el.onclick = async (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    const day = e.target.closest('[data-day]'), m = e.target.closest('[data-mins]');
+    if (day) { const d = +day.dataset.day; c.days = c.days.includes(d) ? c.days.filter((x) => x !== d) : [...c.days, d]; return draw(); }
+    if (m) { c.minutes = +m.dataset.mins; return draw(); }
+    if (!e.target.closest('[data-save]')) return;
+    if (!c.days.length) return toast('Pick at least one day');
+    if (c.endMin <= c.startMin) return toast('The end time must be after the start');
+    commutes.push({ id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), ...c, name: c.name.trim() || `To ${to.name}`, from, to });
+    close();
+    if (await saveCommutes(true)) toast(`Alerts on: ${c.minutes} min before you need to leave`);
+  };
+}
+renderCommutes(); syncCommutes();
+
+// ---------- signed-in devices ----------
+// Every sign-in is its own session on the server, so a lost phone can be signed out from here without changing the password.
+// The header button only appears when the server has a login at all (it doesn't in local dev).
+const daysAgo = (ms) => { const d = Math.floor((Date.now() - ms) / 864e5); return d < 1 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
+async function openDevicesSheet() {
+  const bar = '<div class="sheet-bar"><b>Signed-in devices</b><button data-close class="done">Done</button></div>';
+  const { el, close } = sheetShell(bar + '<div class="empty" style="padding:16px">Loading…</div>');
+  let list = [];
+  const draw = async () => {
+    try { list = (await api('/api/sessions')).sessions; } catch { return void (el.querySelector('.empty').textContent = 'Could not load devices.'); }
+    el.innerHTML = `<div class="sheet-bar"><div><b>Signed-in devices</b><small>Sign one out if you lose it</small></div><button data-close class="done">Done</button></div>
+      <div class="sheet-list">${list.map((s) => `<div class="sg"><span class="ico">${icon('smartphone')}</span><span class="t"><b>${esc(s.label)}${s.current ? '<span class="chip">This device</span>' : ''}</b><small>Signed in ${new Date(s.created).toLocaleDateString()} · active ${daysAgo(s.lastSeen)}</small></span>
+        <button class="cbtn" data-revoke="${esc(s.id)}" aria-label="Sign out ${s.current ? 'this device' : esc(s.label)}">${icon('log-out')}</button></div>`).join('')}</div>`;
+  };
+  el.onclick = async (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    const b = e.target.closest('[data-revoke]'); if (!b) return;
+    if (!b.dataset.sure) { b.dataset.sure = 1; b.classList.add('sure'); b.textContent = 'Sign out?'; return; } // a second tap confirms
+    const me = list.find((s) => s.id === b.dataset.revoke)?.current;
+    try { await post('/api/sessions/revoke', { id: b.dataset.revoke }); } catch { return toast('Could not sign out that device'); }
+    if (me) location.href = '/login'; else draw();
+  };
+  draw();
+}
+$('#devices-btn').onclick = openDevicesSheet;
+api('/api/sessions').then((r) => { $('#devices-btn').hidden = !r.enabled; }).catch(() => {});
 
 // ---------- map ----------
 let map, lineLayer, dotLayer, busLayer, stopLayer, meMarker, fitNext = false;
@@ -821,10 +924,10 @@ $('#alerts').onclick = (e) => {
 const refreshAll = () => Promise.all([refreshPins().then(loadAlerts), refreshNearby(), map && !$('#map').hidden && refreshMap()]);
 // Another device changed a synced setting: re-read them in place (no reload, so the tab, open sheets and the map stay put)
 function applySynced() {
-  pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {});
+  pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {}); commutes = store.get('commutes', []);
   shown = store.get('shownRoutes', null); stopAlerts = store.get('stopAlerts', {}); stopSort = store.get('stopSort', 'mine');
   seenAlerts = new Set(store.get('seenAlerts', [])); loadAlerts();
-  renderPlaces(); applyRouteFilter();
+  renderPlaces(); renderCommutes(); syncCommutes(); applyRouteFilter();
 }
 $('#updated').onclick = () => { $('#updated').textContent = 'Refreshing…'; refreshAll(); };
 // Pull down at the top of Pinned to refresh

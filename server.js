@@ -90,13 +90,20 @@ async function feed(name) {
 }
 
 // ---------- arrivals ----------
-const lastGood = new Map(); // trip|stop -> {time, seen} so predictions don't flicker away
+const lastGood = new Map(); // trip|stop -> {time, seen, tracked} so predictions don't flicker away
+const recorded = new Set(); // trip|stop pairs whose delay has gone into the reliability history (once per bus)
 // A bus that has left stays on the board as Gone for a minute from when we first saw it leave, not from its predicted
 // time (a bus can sit at the stop as Due for a while). at: its time at the stop, which must be recent to start the minute.
 const leftAt = new Map(); // trip|stop -> ms we first saw it gone
 const justLeft = (key, at, now) => {
   if (!leftAt.has(key)) { if (at <= now - 180) return false; leftAt.set(key, Date.now()); }
   return Date.now() - leftAt.get(key) < 60000;
+};
+// A tracked bus has passed this stop (or arrived): its last prediction is how late it really was. Counted once per bus.
+const noteDelay = (key, base, stopId, st, last, weekend) => {
+  if (!last || !last.tracked || recorded.has(key)) return;
+  recorded.add(key);
+  history.record(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24, last.time - base.sched);
 };
 const shape = (tripId, time, live) => {
   const t = trips[tripId] || {};
@@ -155,7 +162,7 @@ async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
   const { byTrip, blocks } = await realtimeState();
   const localMidnight = Math.floor((now + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
-  const services = activeServices(new Date((now + TZ_OFFSET_SEC) * 1000));
+  const local = new Date((now + TZ_OFFSET_SEC) * 1000), services = activeServices(local), weekend = [0, 6].includes(local.getUTCDay());
   const out = [];
   for (const st of stopTimesByStop[stopId] || []) {
     const t = trips[st.trip];
@@ -163,16 +170,18 @@ async function arrivalsAt(stopId) {
     if (!t || !services.has(t.service_id) || sched < now - 3600 || sched > now + 3 * 3600) continue; // an hour back: late buses still count
     const sts = tripStops[st.trip], idx = sts.findIndex((x) => x.stop === stopId && x.t === st.t), s = byTrip.get(st.trip);
     const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true }) }; // ends: last stop, you can't board it
+    const usual = history.usual(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24); // how this bus tends to run at this hour
+    if (usual) base.usual = usual;
     if (s && s.cancelled) { if (sched > now - 60) out.push({ ...base, cancelled: true }); continue; }
     const p = s && s.at.get(idx);
     if (p && p.skipped) { if (sched > now - 60) out.push({ ...base, skipped: true }); continue; }
     const key = `${st.trip}|${stopId}`, last = lastGood.get(key);
     // the bus is past this stop: the trip's next stop is further on, or it finished (the feed may also drop the passed stop)
     const passed = s && s.at.size > 0 && (s.next == null || s.next > idx);
-    if (passed) { const at = (p && p.time) || (last && last.time); if (at && justLeft(key, at, now)) out.push({ ...base, time: at, gone: true }); continue; }
+    if (passed) { noteDelay(key, base, stopId, st, last, weekend); const at = (p && p.time) || (last && last.time); if (at && justLeft(key, at, now)) out.push({ ...base, time: at, gone: true }); continue; }
     if (p && p.time) {
-      lastGood.set(key, { time: p.time, seen: Date.now() });
       const tracked = s.bus || (!!t.block_id && blocks.get(t.block_id) <= sts[0].t);
+      lastGood.set(key, { time: p.time, seen: Date.now(), tracked });
       // stops away only once the bus has actually started this trip (it may be waiting at the first stop)
       const started = s.bus && (s.next > 0 || (s.at.get(0) || {}).time <= now);
       out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }) });
@@ -180,11 +189,11 @@ async function arrivalsAt(stopId) {
     }
     // the feed dropped the trip. Trips leave the feed when the bus reaches its last stop, so one that was due has arrived;
     // otherwise keep its last prediction for 90s in case that's a hiccup
-    if (last && Date.now() - last.seen < 90000 && (base.ends || last.time <= now + 60)) { if (justLeft(key, last.time, now)) out.push({ ...base, time: last.time, gone: true }); continue; }
+    if (last && Date.now() - last.seen < 90000 && (base.ends || last.time <= now + 60)) { noteDelay(key, base, stopId, st, last, weekend); if (justLeft(key, last.time, now)) out.push({ ...base, time: last.time, gone: true }); continue; }
     if (last && Date.now() - last.seen < 90000) { if (last.time > now - 60) out.push({ ...base, time: last.time, live: true, stale: true, delay: last.time - sched }); continue; }
     if (sched > now - 60) out.push(base); // timetable only
   }
-  for (const [k, v] of lastGood) if (Date.now() - v.seen > 90000) lastGood.delete(k);
+  for (const [k, v] of lastGood) if (Date.now() - v.seen > 90000) { lastGood.delete(k); recorded.delete(k); }
   for (const [k, v] of leftAt) if (Date.now() - v > 600000) leftAt.delete(k);
   return out.sort((a, b) => a.time - b.time).slice(0, 12);
 }
@@ -344,7 +353,8 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
-const push = require('./push')({ arrivals: (id) => arrivals(id) });
+const history = require('./history')();
+const push = require('./push')({ arrivals: (id) => arrivals(id), plan: (from, to) => planTrip(from, to, 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
 const auth = require('./auth')();
 const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
 const body = async (req) => JSON.parse((await text(req)) || '{}');
@@ -356,7 +366,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === '/login' && req.method === 'POST') {
       const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress; // Caddy sets it
-      const r = await auth.login(new URLSearchParams(await text(req)).get('password'), ip, req.headers['x-forwarded-proto'] === 'https');
+      const r = await auth.login(new URLSearchParams(await text(req)).get('password'), ip, req.headers['x-forwarded-proto'] === 'https', req.headers['user-agent']);
       res.writeHead(303, r && r !== 'locked' ? { location: '/', 'set-cookie': r } : { location: `/login?e=${r || 1}` });
       return res.end();
     }
@@ -380,8 +390,16 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/vehicles') return json(res, await vehicles((u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if (p === '/api/sync') return json(res, sync.merge(req.method === 'POST' ? await body(req) : {}));
     if (p === '/api/push/key') return json(res, { key: push.publicKey });
-    if (p === '/api/push/watch' && req.method === 'POST') { push.watch(await body(req)); return json(res, { ok: true }); }
+    if (p === '/api/push/watch' && req.method === 'POST') {
+      const w = await body(req), bad = push.invalid(w);
+      if (bad) return json(res, { error: bad }, 400);
+      w.sid = auth.id(req); // ties the watch to this sign-in, so signing the device out also stops its notifications
+      push.watch(w);
+      return json(res, { ok: true });
+    }
     if (p === '/api/push/unwatch' && req.method === 'POST') { push.unwatch(await body(req)); return json(res, { ok: true }); }
+    if (p === '/api/sessions') return json(res, { enabled: auth.enabled, sessions: auth.list(req) });
+    if (p === '/api/sessions/revoke' && req.method === 'POST') { const { id } = await body(req), ok = auth.revoke(id); if (ok) push.dropSession(id); return json(res, { ok }); }
     if (p === '/api/suggest') return json(res, await search.suggest(u.searchParams.get('q') || '', (u.searchParams.get('kinds') || 'route,stop').split(','), u.searchParams.get('session')));
     if (p === '/api/place') return json(res, await search.placeLatLon(u.searchParams.get('id'), u.searchParams.get('session')));
     if ((m = p.match(/^\/api\/route\/(.+)\/stops$/))) return json(res, search.routeStops(decodeURIComponent(m[1])));
@@ -402,6 +420,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+process.on('SIGTERM', () => { try { history.flush(); } finally { process.exit(0); } }); // systemd restarts on every deploy
 refreshStatic().then(() => {
   server.listen(PORT, process.env.HOST || '0.0.0.0', () => console.log(`BetterTransit on http://${process.env.HOST || 'localhost'}:${PORT}`));
   setInterval(refreshStatic, 3600 * 1000); // hourly check; only downloads when >24h old

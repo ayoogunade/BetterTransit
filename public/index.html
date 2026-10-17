@@ -14,7 +14,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header><h1>Better Transit</h1><div class="hdr-r"><button id="updated" aria-label="Refresh"></button><button id="routes-btn" aria-label="Choose which routes to show"><i data-icon="sliders-horizontal"></i></button></div></header>
+<header><h1>Better Transit</h1><div class="hdr-r"><button id="updated" aria-label="Refresh"></button><button id="devices-btn" aria-label="Signed-in devices" hidden><i data-icon="smartphone"></i></button><button id="routes-btn" aria-label="Choose which routes to show"><i data-icon="sliders-horizontal"></i></button></div></header>
 <main>
   <section id="pinned">
     <div id="ptr" aria-hidden="true"><i data-icon="refresh-cw"></i></div>
@@ -25,6 +25,7 @@
 
   <section id="plan" hidden>
     <div class="places" id="places"></div>
+    <div id="commutes"></div>
     <div class="route-inputs">
       <div class="sbox"><i class="lead" data-icon="map-pin"></i><input id="from" type="search" placeholder="From: place, stop or bus line" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="suggest" id="from-suggest"></div></div>
       <button id="swap" title="Swap" aria-label="Swap from and to"><i data-icon="arrow-up-down"></i></button>
