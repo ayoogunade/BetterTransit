@@ -75,18 +75,24 @@ function activeServices(date) {
 
 // ---------- realtime feeds (cached) ----------
 const cache = {};
+const STALE_MS = 60000; // while the last copy is this fresh a request never waits on the city (the warm loop keeps it well under)
 async function feed(name) {
-  const c = (cache[name] ||= { at: 0, msg: null });
-  if (Date.now() - c.at < TTL_MS && c.msg) return c.msg;
-  try {
-    const res = await fetch(`${RT}/${name}`);
-    if (!res.ok) throw new Error(res.status);
-    c.msg = GtfsRt.FeedMessage.decode(new Uint8Array(await res.arrayBuffer()));
-    c.at = Date.now();
-  } catch (e) {
-    console.error('feed error', name, e.message); // keep serving last good data
-  }
-  return c.msg || { entity: [] };
+  const c = (cache[name] ||= { at: 0, msg: null, pending: null });
+  const age = Date.now() - c.at;
+  if (age < TTL_MS && c.msg) return c.msg;
+  // one download at a time per feed (a page load asks for several stops at once), and never hang on a slow city server
+  c.pending ||= (async () => {
+    try {
+      const res = await fetch(`${RT}/${name}`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) throw new Error(res.status);
+      c.msg = GtfsRt.FeedMessage.decode(new Uint8Array(await res.arrayBuffer()));
+      c.at = Date.now();
+    } catch (e) {
+      console.error('feed error', name, e.message); // keep serving last good data
+    } finally { c.pending = null; }
+    return c.msg || { entity: [] };
+  })();
+  return age < STALE_MS && c.msg ? c.msg : c.pending;
 }
 
 // ---------- arrivals ----------
