@@ -424,4 +424,7 @@ process.on('SIGTERM', () => { try { history.flush(); } finally { process.exit(0)
 refreshStatic().then(() => {
   server.listen(PORT, process.env.HOST || '0.0.0.0', () => console.log(`BetterTransit on http://${process.env.HOST || 'localhost'}:${PORT}`));
   setInterval(refreshStatic, 3600 * 1000); // hourly check; only downloads when >24h old
+  // Keep the live feeds fresh even when nobody has the app open, so the first request after a quiet spell doesn't wait on the city
+  const warm = () => ['TripUpdate/TripUpdates.pb', 'Vehicle/VehiclePositions.pb', 'Alert/Alerts.pb'].forEach((f) => feed(f));
+  warm(); setInterval(warm, 20000);
 });

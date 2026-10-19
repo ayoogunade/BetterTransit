@@ -86,7 +86,7 @@ function showTab(t) {
   $$('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   TABS.forEach((x) => ($('#' + x).hidden = x !== t));
   history.replaceState(history.state, '', '#' + t);
-  if (t === 'map') { initMap(); map.invalidateSize(); refreshMap(); }
+  if (t === 'map') loadLeaflet().then(() => { initMap(); map.invalidateSize(); refreshMap(); }, () => toast('Map unavailable'));
   if (t === 'alerts') refreshAlerts();
   if (t === 'plan') loadSlotMins();
   window.scrollTo(0, 0);
@@ -779,7 +779,12 @@ api('/api/sessions').then((r) => { $('#devices-btn').hidden = !r.enabled; }).cat
 
 // ---------- map ----------
 let map, lineLayer, dotLayer, busLayer, stopLayer, meMarker, fitNext = false;
-const CITY = L.latLngBounds([52.05, -106.80], [52.23, -106.50]); // the map can't be panned or zoomed out beyond Saskatoon
+// Leaflet (public/vendor, from `npm run vendor`) loads the first time the map opens, so it never holds up the app's first paint
+let leaflet;
+const loadLeaflet = () => (leaflet ||= new Promise((ok, no) => {
+  document.head.append(Object.assign(document.createElement('link'), { rel: 'stylesheet', href: 'vendor/leaflet.css' }));
+  document.head.append(Object.assign(document.createElement('script'), { src: 'vendor/leaflet.js', onload: ok, onerror: () => { leaflet = null; no(); } }));
+}));
 let mapMode = store.get('mapMode', pins.length || routePins.length ? 'pins' : 'all'); // riders mostly care about their own buses
 const markers = new Map(); // vehicle id -> marker, updated in place so buses glide instead of flickering
 
@@ -794,6 +799,7 @@ function syncSeg() {
   $$('.mapbar .seg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === mapMode && !$('#maproute').value)); }
 function initMap() {
   if (map) return;
+  const CITY = L.latLngBounds([52.05, -106.80], [52.23, -106.50]); // the map can't be panned or zoomed out beyond Saskatoon
   map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10 }).setView([52.13, -106.65], 12);
   const fitCity = () => map.setMinZoom(Math.max(10, map.getBoundsZoom(CITY))); // zoomed out just far enough to see the whole city
   fitCity(); window.addEventListener('resize', fitCity);
