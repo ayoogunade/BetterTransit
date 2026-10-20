@@ -335,3 +335,6 @@ header { align-items: center; }
 .cform .trow input { flex: 1; min-width: 0; box-shadow: none; }
 .cform .btnrow { margin: 16px 14px 0; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lastbus { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.lastbus .ic { width: 13px; height: 13px; }
+.rbtn { flex: none; padding: 6px 10px; font-size: 13px; margin-left: auto; }

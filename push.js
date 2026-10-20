@@ -2,6 +2,8 @@
 // Three kinds of watch: one trip at a stop (dropped once it has fired), a standing stop watch ({standing: true, routes}) that
 // fires once for every bus of the chosen routes at that stop and stays until removed, and a commute ({commute: true, from, to,
 // days, startMin, endMin}) that plans the trip during its time window and says when to leave for the next bus.
+// A fourth, {ride: true, tripId, alightStopId, alightIdx, ...}, rides along with one bus: "your stop is next" when it nears the stop you get off at.
+// With {next: {tripId, boardStopId, boardIdx, walkSecs, route}, to, alightAt} it also warns, once, if you will miss the connection, and re-plans.
 const fs = require('fs');
 const path = require('path');
 const webpush = require('web-push');
@@ -30,18 +32,23 @@ function invalid(w) {
     if (!point(w.from) || !point(w.to)) return 'bad places';
     if (!Array.isArray(w.days) || !w.days.length || !w.days.every((d) => int(d, 0, 6))) return 'bad days';
     if (!int(w.startMin, 0, 1439) || !int(w.endMin, 0, 1439) || w.endMin < w.startMin) return 'bad times';
+  } else if (w.ride) {
+    if (typeof w.tripId !== 'string' || !w.tripId || typeof w.alightStopId !== 'string' || !w.alightStopId) return 'bad ride';
+    if (!int(w.alightIdx, 1, 500)) return 'bad ride';
+    const n = w.next;
+    if (n && !(typeof n.tripId === 'string' && n.tripId && typeof n.boardStopId === 'string' && int(n.boardIdx, 0, 500) && int(n.walkSecs, 0, 7200) && typeof n.route === 'string' && point(w.to) && point(w.alightAt))) return 'bad connection';
   } else if (typeof w.stopId !== 'string' || !w.stopId) return 'bad stop';
   return null;
 }
 
-module.exports = function createPush({ arrivals, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
+module.exports = function createPush({ arrivals, progress = async () => null, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
   webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://34-46-182-45.sslip.io', keys.publicKey, keys.privateKey);
 
   let watches = loadJson(WATCHES, []); // {sub, stopId, tripId, minutes, route, headsign, stopName} or {sub, stopId, standing, routes, minutes, stopName, sent}
-  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && a.stopId === b.stopId && a.tripId === b.tripId && a.commuteId === b.commuteId;
+  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && (a.alightStopId || a.stopId) === (b.alightStopId || b.stopId) && !!a.ride === !!b.ride && a.tripId === b.tripId && a.commuteId === b.commuteId;
   const clock = (t) => { const d = new Date((t + tzOffsetSec) * 1000), h = d.getUTCHours(); return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
   // watches that notify once per trip remember which ones, for six hours
   const prune = (w, now) => { w.sent ||= {}; for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip]; };
@@ -77,18 +84,47 @@ module.exports = function createPush({ arrivals, plan = async () => [], tzOffset
     if (!ride || w.sent[ride.trip] || o.leave - now > w.minutes * 60) return true;
     w.sent[ride.trip] = now;
     const mins = Math.max(0, Math.round((o.leave - now) / 60));
-    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}` }));
+    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}${ride.last ? ' · last bus' : ''}` }));
+  }
+
+  // Ride watch: "your stop is next" once the bus is at the stop before yours. Returns false if the watch should be dropped.
+  async function pingRide(w, now) {
+    w.since ||= now;
+    if (now - w.since > 3 * 3600) return false;
+    let p;
+    try { p = await progress(w.tripId); } catch { return true; } // feed hiccup: try again next tick
+    if (!p || !p.live) { w.missing ||= now; return now - w.missing < 300; } // trip left the feed: give up after 5 min
+    delete w.missing;
+    if (p.cancelled || p.next === null || p.next > w.alightIdx) return false; // cancelled, finished, or you are past your stop
+    if (p.next === undefined) return true; // no predictions yet
+    if (w.next && !w.rescued) await rescue(w, p);
+    if (p.next < w.alightIdx - 1) return true;
+    await send(w, { title: 'Your stop is next', body: `Get off at ${w.stopName}` });
+    return false;
+  }
+  // Will the connection still be there when you've reached your stop and walked to it (plus a minute)? If not, re-plan from here, once.
+  async function rescue(w, p) {
+    const n = w.next, np = await progress(n.tripId).catch(() => null);
+    if (!np) return;
+    const arrive = p.time(w.alightIdx);
+    if (!np.cancelled && arrive + n.walkSecs + 60 <= np.time(n.boardIdx)) return;
+    const opts = await plan(w.alightAt, w.to, Math.ceil(arrive)).catch(() => null);
+    if (!opts) return; // planner down: try again next tick
+    w.rescued = true;
+    const o = opts[0], r = o && o.legs.find((l) => l.type === 'ride');
+    await send(w, { title: `You'll miss the ${n.route} at ${n.stopName || w.stopName}`, body: r ? `Take the ${r.route} ${r.headsign || ''} at ${clock(r.dep)} instead · arrive ${clock(o.arrive)}` : 'No other bus found from here' });
   }
 
   async function check() {
     const now = Date.now() / 1000;
-    const stopIds = [...new Set(watches.filter((w) => !w.commute).map((w) => w.stopId))];
+    const stopIds = [...new Set(watches.filter((w) => !w.commute && !w.ride).map((w) => w.stopId))];
     const arr = Object.fromEntries(await Promise.all(stopIds.map(async (s) => [s, await arrivals(s).catch(() => null)])));
     // Sends are slow, and watch()/unwatch() can run while we wait on them, so only remove the watches this pass finished with;
     // replacing the whole list would throw away anything added in the meantime.
     const drop = new Set();
     for (const w of [...watches]) {
       if (w.commute) { if (!(await pingCommute(w, now))) drop.add(w); continue; }
+      if (w.ride) { if (!(await pingRide(w, now))) drop.add(w); continue; }
       if (w.standing) { if (arr[w.stopId] && !(await pingStop(w, arr[w.stopId], now))) drop.add(w); continue; }
       const hit = (arr[w.stopId] || []).find((a) => a.trip === w.tripId);
       if (!arr[w.stopId]) continue; // feed hiccup: try again next tick
@@ -114,7 +150,7 @@ module.exports = function createPush({ arrivals, plan = async () => [], tzOffset
     publicKey: keys.publicKey,
     watch(w) { // the app re-registers its watches on every launch: keep what this one already announced
       const old = watches.find((x) => same(x, w));
-      if (old && old.sent) w.sent = old.sent;
+      if (old) for (const k of ['sent', 'since', 'rescued']) if (old[k]) w[k] = old[k];
       watches = watches.filter((x) => x !== old); watches.push(w); save(WATCHES, watches);
     },
     unwatch(w) { watches = watches.filter((x) => !same(x, w)); save(WATCHES, watches); },

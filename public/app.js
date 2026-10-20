@@ -309,16 +309,17 @@ const usualText = (a) => {
   const u = a.usual;
   return !u ? '' : u.late >= 30 ? `late ${u.late}% of the time here` : Math.abs(u.avg) < 1 ? 'usually on time' : u.avg > 0 ? `usually ${u.avg} min late` : `usually ${-u.avg} min early`;
 };
+const lastBus = `<span class="lastbus">${icon('moon')} Last bus</span>`; // the last scheduled trip of the day on this route and direction
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
   if (a.skipped) return '<em class="bad">Not stopping here (detour)</em>';
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
   const ends = a.ends ? 'Drop-off only' : '';
-  if (!a.tracked) return [ends, 'Not tracked yet', usualText(a)].filter(Boolean).join(' · ');
+  if (!a.tracked) return [ends, 'Not tracked yet', usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
   return [ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
-    d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
+    d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : '', a.last ? lastBus : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
 }
 const arrivalEta = (a) => (!isComing(a)
   ? `<span class="eta off">${a.gone ? 'Gone' : `<s>${clock(a.sched)}</s>`}${a.gone ? `<span class="sched">${clock(a.time)}</span>` : ''}</span>`
@@ -443,13 +444,15 @@ const pushFail = (err) => toast(err.message === 'timeout' ? 'Notifications unava
 
 // One bus at one stop, w = {stopId, stopName, tripId, route, headsign, minutes?}: alert N min before it arrives
 // (N defaults to the stop's alert minutes, else 5). Toggles; returns once done.
+// A ride watch ({ride: true, alightStopId, ...}, see rideWatch) is the same toggle: "your stop is next" while you are on that bus.
+const rideKey = (w) => (w.ride ? 'ride|' : '') + watchKey(w.alightStopId || w.stopId, w.tripId);
 async function toggleWatch(w) {
-  const k = watchKey(w.stopId, w.tripId), on = watching.has(k), minutes = w.minutes || stopAlerts[w.stopId] || 5;
+  const k = rideKey(w), on = watching.has(k), minutes = w.minutes || stopAlerts[w.stopId] || 5;
   try {
     const sub = await getSub(!on);
     if (!sub) return;
-    if (on) { await post('/api/push/unwatch', { sub, stopId: w.stopId, tripId: w.tripId }); watching.delete(k); }
-    else { await post('/api/push/watch', { ...w, minutes, sub }); watching.add(k); toast(`Will notify ${minutes} min before`); }
+    if (on) { await post('/api/push/unwatch', { sub, stopId: w.stopId, alightStopId: w.alightStopId, ride: w.ride, tripId: w.tripId }); watching.delete(k); }
+    else { await post('/api/push/watch', { ...w, minutes, sub }); watching.add(k); toast(w.ride ? `Will tell you when ${w.stopName} is next` : `Will notify ${minutes} min before`); }
     store.set('watching', [...watching]);
   } catch (err) { pushFail(err); }
 }
@@ -652,11 +655,21 @@ async function planTrip() {
 }
 let trips = [];
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
+// l: a ride leg, nl: the ride leg after it (if any) and the walk between them, so a missed connection can be rescued
+const rideWatch = (l, nl, walkMins) => ({ ride: true, tripId: l.trip, alightStopId: l.alight.id, alightIdx: l.alight.idx, stopName: l.alight.name, route: l.route, headsign: l.headsign, minutes: 1,
+  ...(nl && { next: { tripId: nl.trip, boardStopId: nl.board.id, boardIdx: nl.boardIdx, walkSecs: walkMins * 60, route: nl.route, stopName: nl.board.name }, to: { lat: place.to.lat, lon: place.to.lon }, alightAt: { lat: l.alight.lat, lon: l.alight.lon } }) });
+const rideLabel = (l) => (watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? `${icon('bell-ring')} Stop alert on` : `${icon('bus')} I'm on this bus`);
 const tripPinLabel = (l) => `${icon('pin')} ${isStopPinned(l.board) ? 'Stop pinned' : 'Pin this stop'}`;
 $('#trip').onclick = async (e) => {
   const b = e.target.closest('button');
   if (b?.dataset.savecommute !== undefined) return openCommuteSheet();
   if (b?.dataset.tpin) { const l = firstRide(+b.dataset.tpin); toggleStopPin(l.board); b.classList.toggle('on', isStopPinned(l.board)); return void (b.innerHTML = tripPinLabel(l)); }
+  if (b?.dataset.ride) {
+    const [o, j] = b.dataset.ride.split(':').map(Number), legs = trips[o].legs, l = legs[j], after = legs.slice(j + 1), ni = after.findIndex((x) => x.type === 'ride');
+    await toggleWatch(rideWatch(l, ni < 0 ? null : after[ni], after.slice(0, Math.max(ni, 0)).reduce((n, x) => n + x.mins, 0)));
+    b.classList.toggle('on', watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })));
+    return void (b.innerHTML = rideLabel(l));
+  }
   if (b?.dataset.twatch) {
     const l = firstRide(+b.dataset.twatch);
     await toggleWatch({ stopId: l.board.id, stopName: l.board.name, tripId: l.trip, route: l.route, headsign: l.headsign });
@@ -671,10 +684,11 @@ function tripCard(r, i) {
   const open = i === 0, rides = r.legs.filter((l) => l.type === 'ride');
   const walk = r.legs.filter((l) => l.type === 'walk').reduce((n, l) => n + l.mins, 0) + (r.finalWalkMins || 0);
   const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
-  const legs = r.legs.map((l) => l.type === 'walk'
+  const legs = r.legs.map((l, j) => l.type === 'walk'
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
     : `<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
-        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small></div>
+        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small>
+          ${l.alight ? `<button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button>` : ''}</div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
   const first = rides[0], act = first && first.trip ? `<div class="btnrow"><button class="btn ${isStopPinned(first.board) ? 'on' : ''}" data-tpin="${i}">${tripPinLabel(first)}</button>

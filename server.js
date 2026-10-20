@@ -20,6 +20,7 @@ const read = (f) =>
   parse(fs.readFileSync(path.join(GTFS_DIR, f)), { columns: true, skip_empty_lines: true, trim: true });
 const toSecs = (t) => { const [h, m, s] = t.split(':').map(Number); return h * 3600 + m * 60 + s; };
 
+const lastCache = new Map(); // service day|stop -> Map(route|headsign -> its last trip), see lastTrips
 let stops, childrenOf, routes, trips, calendar, calDates, stopTimesByStop, tripStops, plan, shapes, routeMapCache;
 function loadStatic() {
   stops = read('stops.txt'); // includes hubs (location_type 1); arrivals() merges a hub's child stops
@@ -29,6 +30,7 @@ function loadStatic() {
   trips = Object.fromEntries(read('trips.txt').map((t) => [t.trip_id, t]));
   calendar = read('calendar.txt');
   calDates = read('calendar_dates.txt');
+  lastCache.clear();
   stopTimesByStop = {};
   tripStops = {}; // trip -> ordered [{stop, t, seq}] for the planner
   for (const st of read('stop_times.txt')) {
@@ -71,6 +73,25 @@ function activeServices(date) {
   const on = new Set(calendar.filter((c) => c[dow] === '1' && +c.start_date <= ymd && ymd <= +c.end_date).map((c) => c.service_id));
   for (const d of calDates) if (+d.date === ymd) d.exception_type === '1' ? on.add(d.service_id) : on.delete(d.service_id);
   return on;
+}
+
+// The last scheduled trip of each route+headsign that leaves this stop on a service day (a trip ending here doesn't count: nobody boards it).
+// Cached per stop and day, so one pass over the stop's times serves every request that day.
+const tripKey = (t) => `${t.route_id}|${t.trip_headsign}`;
+const dayOf = (t) => new Date((t + TZ_OFFSET_SEC) * 1000).toISOString().slice(0, 10);
+function lastTrips(stopId, services, day) {
+  const k = `${day}|${stopId}`;
+  if (lastCache.has(k)) return lastCache.get(k);
+  if (lastCache.size > 2000) lastCache.clear();
+  const out = new Map(), at = new Map();
+  for (const st of stopTimesByStop[stopId] || []) {
+    const t = trips[st.trip], sts = tripStops[st.trip], end = sts[sts.length - 1];
+    if (!t || !services.has(t.service_id) || (end.stop === stopId && end.t === st.t)) continue;
+    const key = tripKey(t);
+    if (!(at.get(key) >= st.t)) { at.set(key, st.t); out.set(key, st.trip); }
+  }
+  lastCache.set(k, out);
+  return out;
 }
 
 // ---------- realtime feeds (cached) ----------
@@ -158,24 +179,38 @@ async function realtimeState() {
   return out;
 }
 
+// Where a trip is for a ride alert: next = index of the first stop still ahead (null: finished, undefined: no predictions), live = it is in the
+// feed, time(i) = predicted epoch at stop i (the nearest earlier prediction carried forward, else the timetable)
+async function rideProgress(tripId) {
+  const sts = tripStops[tripId];
+  if (!sts) return null;
+  const s = (await realtimeState()).byTrip.get(tripId);
+  const time = (i) => {
+    for (let j = i; s && j >= 0; j--) { const p = s.at.get(j); if (p && p.time) return p.time + sts[i].t - sts[j].t; }
+    return realTime(sts[i].t, Date.now() / 1000);
+  };
+  return { live: !!s, next: s && s.at.size ? s.next : undefined, cancelled: !!(s && s.cancelled), time };
+}
+
 // Arrivals at one stop, each with how much to trust it:
 //   tracked: a bus is on this trip, or out on an earlier run of the same block (so it's coming); time is the prediction
 //   sched: timetable time, so delay = time - sched (positive = late, negative = early); stopsAway when the bus is on this trip
 //   cancelled / skipped (detour) are listed so you know not to wait; gone: just passed this stop (shown briefly)
 //   stale: the feed dropped the trip, this is its last prediction; neither tracked nor stale = timetable only
 //   ends: this is the trip's last stop (drop-off only)
+//   last: the last scheduled trip of this route+headsign from here today
 async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
   const { byTrip, blocks } = await realtimeState();
   const localMidnight = Math.floor((now + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const local = new Date((now + TZ_OFFSET_SEC) * 1000), services = activeServices(local), weekend = [0, 6].includes(local.getUTCDay());
-  const out = [];
+  const lastOf = lastTrips(stopId, services, dayOf(now)), out = [];
   for (const st of stopTimesByStop[stopId] || []) {
     const t = trips[st.trip];
     const sched = localMidnight + st.t;
     if (!t || !services.has(t.service_id) || sched < now - 3600 || sched > now + 3 * 3600) continue; // an hour back: late buses still count
     const sts = tripStops[st.trip], idx = sts.findIndex((x) => x.stop === stopId && x.t === st.t), s = byTrip.get(st.trip);
-    const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true }) }; // ends: last stop, you can't board it
+    const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true }), ...(lastOf.get(tripKey(t)) === st.trip && { last: true }) }; // ends: last stop, you can't board it
     const usual = history.usual(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24); // how this bus tends to run at this hour
     if (usual) base.usual = usual;
     if (s && s.cancelled) { if (sched > now - 60) out.push({ ...base, cancelled: true }); continue; }
@@ -332,7 +367,7 @@ async function planTrip(from, to, departAt, arriveBy = 0) {
   const localMidnight = Math.floor((when + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const services = activeServices(new Date((when + TZ_OFFSET_SEC) * 1000));
   const live = when - now < 2 * 3600 ? await liveTimes() : new Map(); // delays only matter for near-term trips
-  const abs = (t) => localMidnight + t;
+  const abs = (t) => localMidnight + t, day = dayOf(when);
   const opts = arriveBy ? plan.arriveBy(from, to, arriveBy - localMidnight, services, live, when - localMidnight) : plan.options(from, to, when - localMidnight, services, live);
   return opts.map((r) => ({
     leave: abs(r.leave),
@@ -340,9 +375,11 @@ async function planTrip(from, to, departAt, arriveBy = 0) {
     legs: r.legs.map((l) => {
       if (l.type === 'walk') return { type: 'walk', mins: Math.max(1, Math.round(l.secs / 60)), to: l.to ? nameOf(l.to) : null };
       const t = trips[l.trip], rt = routes[t.route_id] || {};
-      const b = stopOf(l.stops[l.from]); // boarding stop, so the app can pin it or set an alert for this bus there
+      const b = stopOf(l.stops[l.from]), a = stopOf(l.stops[l.to]); // boarding stop, so the app can pin it or set an alert for this bus there; alighting stop for "get off" alerts
       return { type: 'ride', live: l.live, trip: l.trip, route: rt.route_short_name, color: rt.route_color, headsign: t.trip_headsign, from: nameOf(l.stops[l.from]), to: nameOf(l.stops[l.to]), dep: abs(l.times[l.from]), arr: abs(l.times[l.to]), stops: l.to - l.from,
-        board: { id: b.stop_id, name: b.stop_name, lat: +b.stop_lat, lon: +b.stop_lon } };
+        board: { id: b.stop_id, name: b.stop_name, lat: +b.stop_lat, lon: +b.stop_lon }, boardIdx: l.from,
+        alight: { id: a.stop_id, name: a.stop_name, lat: +a.stop_lat, lon: +a.stop_lon, idx: l.to },
+        ...(lastTrips(b.stop_id, services, day).get(tripKey(t)) === l.trip && { last: true }) };
     }),
     finalWalkMins: Math.round(r.finalWalk / 60),
   }));
@@ -360,7 +397,7 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
 const history = require('./history')();
-const push = require('./push')({ arrivals: (id) => arrivals(id), plan: (from, to) => planTrip(from, to, 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
+const push = require('./push')({ arrivals: (id) => arrivals(id), progress: rideProgress, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
 const auth = require('./auth')();
 const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
 const body = async (req) => JSON.parse((await text(req)) || '{}');

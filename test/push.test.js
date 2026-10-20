@@ -214,3 +214,124 @@ test('re-registering a watch keeps what it already announced, and signing a devi
   push.dropSession(null); // never matches "no session" watches
   assert.ok(push.has(commute({ sub: { endpoint: 'other' }, commuteId: 'r1' })));
 });
+
+// ---------- ride alerts ("get off at your stop") and missed-transfer rescue ----------
+const ride = (extra = {}) => ({ sub: { endpoint: 'r1' }, ride: true, tripId: 'R', alightStopId: 'A', alightIdx: 10, stopName: 'University', route: '8', headsign: 'Market Mall', minutes: 1, ...extra });
+const prog = (next, extra = {}) => ({ live: true, next, cancelled: false, time: () => now() + 300, ...extra });
+
+test('a ride watch says your stop is next once, when the bus is at the stop before, then drops', async () => {
+  sent.length = 0;
+  let p = prog(5);
+  const push = createPush({ arrivals: async () => assert.fail('ride watches do not poll arrivals'), progress: async () => p, checkEveryMs: 1e9 });
+  push.watch(ride());
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+  p = prog(9);
+  await push.check();
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].title, 'Your stop is next');
+  assert.match(sent[0].body, /Get off at University/);
+  assert.ok(!push.has(ride()));
+});
+
+test('a ride watch is independent of a plain bell on the same bus and stop', () => {
+  const push = createPush({ arrivals: async () => [], checkEveryMs: 1e9 });
+  push.watch(ride());
+  push.watch({ sub: { endpoint: 'r1' }, stopId: 'A', tripId: 'R', minutes: 5 });
+  push.unwatch({ sub: { endpoint: 'r1' }, alightStopId: 'A', tripId: 'R', ride: true });
+  assert.ok(!push.has(ride()));
+  assert.ok(push.has({ sub: { endpoint: 'r1' }, stopId: 'A', tripId: 'R' }));
+});
+
+test('a ride watch is dropped silently when you are past the stop, the bus is cancelled, or the trip stays gone', async () => {
+  for (const p of [prog(11), prog(null), prog(3, { cancelled: true })]) {
+    sent.length = 0;
+    const push = createPush({ arrivals: async () => [], progress: async () => p, checkEveryMs: 1e9 });
+    push.watch(ride());
+    await push.check();
+    assert.strictEqual(sent.length, 0);
+    assert.ok(!push.has(ride()));
+  }
+  const gone = createPush({ arrivals: async () => [], progress: async () => ({ live: false, next: undefined, cancelled: false }), checkEveryMs: 1e9 });
+  const w = ride({ tripId: 'GONE' });
+  gone.watch(w);
+  await gone.check();
+  assert.ok(gone.has(w)); // grace period
+  w.missing = now() - 301; // not in the feed for over 5 min (the watch object is the stored one)
+  await gone.check();
+  assert.ok(!gone.has(w));
+});
+
+test('a ride watch gives up after three hours', async () => {
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [], progress: async () => prog(1), checkEveryMs: 1e9 });
+  push.watch(ride({ since: now() - 3 * 3600 - 5 }));
+  await push.check();
+  assert.ok(!push.has(ride()));
+  assert.strictEqual(sent.length, 0);
+});
+
+test('invalid() checks ride watches', () => {
+  const push = createPush({ arrivals: async () => [], checkEveryMs: 1e9 });
+  const sub = { endpoint: 'https://fcm.googleapis.com/x', keys: { p256dh: 'a', auth: 'b' } };
+  const r = (extra = {}) => ({ ...ride({ sub }), ...extra });
+  const next = { tripId: 'N', boardStopId: 'B', boardIdx: 2, walkSecs: 120, route: '60' };
+  assert.strictEqual(push.invalid(r()), null);
+  assert.strictEqual(push.invalid(r({ next, to: { lat: 52.1, lon: -106.6 }, alightAt: { lat: 52.2, lon: -106.7 } })), null);
+  assert.ok(push.invalid(r({ tripId: '' })));
+  assert.ok(push.invalid(r({ alightStopId: undefined })));
+  assert.ok(push.invalid(r({ alightIdx: -1 })));
+  assert.ok(push.invalid(r({ alightIdx: 1.5 })));
+  assert.ok(push.invalid(r({ next, to: { lat: 52.1, lon: -106.6 } }))); // no alight point to re-plan from
+  assert.ok(push.invalid(r({ next, alightAt: { lat: 52.2, lon: -106.7 } }))); // no destination
+  assert.ok(push.invalid(r({ next: { ...next, walkSecs: -1 }, to: { lat: 1, lon: 1 }, alightAt: { lat: 1, lon: 1 } })));
+  assert.ok(push.invalid(r({ next: { ...next, tripId: '' }, to: { lat: 1, lon: 1 }, alightAt: { lat: 1, lon: 1 } })));
+});
+
+// the bus reaches your stop in `arriveIn` s; the connection leaves `connIn` s from now and you need 2 min to walk
+const rescue = (arriveIn, connIn, opts = {}) => {
+  const times = { R: prog(3, { time: () => now() + arriveIn }), N: prog(undefined, { live: true, time: () => now() + connIn, ...opts.conn }) };
+  const calls = [];
+  const plan = async (from, to, at) => { calls.push({ from, to, at }); return opts.alt === undefined ? [{ leave: at, arrive: at + 1500, legs: [{ type: 'ride', route: '8', headsign: 'Market Mall', dep: at + 240, board: { name: 'University' } }] }] : opts.alt; };
+  const push = createPush({ arrivals: async () => [], progress: async (id) => times[id], plan, checkEveryMs: 1e9 });
+  push.watch(ride({ next: { tripId: 'N', boardStopId: 'B', boardIdx: 2, walkSecs: 120, route: '60', stopName: 'Broadway' }, to: { lat: 52.1, lon: -106.6 }, alightAt: { lat: 52.2, lon: -106.7 } }));
+  return { push, calls };
+};
+
+test('a connection you can still make sends nothing; one you will miss re-plans and says what to take instead, once', async () => {
+  sent.length = 0;
+  const ok = rescue(300, 600); // arrive in 5 min + 2 walk + 1 margin = 8 < 10
+  await ok.push.check();
+  assert.strictEqual(sent.length + ok.calls.length, 0);
+  const late = rescue(300, 400); // 8 min needed, leaves in 6.7
+  await late.push.check();
+  assert.strictEqual(late.calls.length, 1);
+  assert.deepStrictEqual(late.calls[0].from, { lat: 52.2, lon: -106.7 });
+  assert.deepStrictEqual(late.calls[0].to, { lat: 52.1, lon: -106.6 });
+  assert.ok(Math.abs(late.calls[0].at - (now() + 300)) < 5); // departing when you arrive
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].title, "You'll miss the 60 at Broadway");
+  assert.match(sent[0].body, /Take the 8 Market Mall at \d+:\d\d (AM|PM) instead · arrive \d+:\d\d (AM|PM)/);
+  await late.push.check();
+  assert.strictEqual(sent.length, 1); // only once
+  assert.strictEqual(late.calls.length, 1);
+  assert.ok(late.push.has(ride())); // still watching for the get-off alert
+});
+
+test('a cancelled connection counts as missed, and with no alternative the push says so', async () => {
+  sent.length = 0;
+  const r = rescue(300, 9999, { conn: { cancelled: true }, alt: [] });
+  await r.push.check();
+  assert.strictEqual(sent.length, 1);
+  assert.match(sent[0].title, /miss the 60/);
+  assert.match(sent[0].body, /No other bus/);
+});
+
+test('commute pushes say when the bus is the last one', async () => {
+  sent.length = 0;
+  const plan = async () => { const o = option(now() + 200); o[0].legs[1].last = true; return o; };
+  const push = createPush({ arrivals: async () => [], plan, checkEveryMs: 1e9 });
+  push.watch(commute({ commuteId: 'last' }));
+  await push.check();
+  assert.match(sent[0].body, / · last bus$/);
+});
