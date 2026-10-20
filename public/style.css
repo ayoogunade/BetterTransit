@@ -75,6 +75,8 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .summary .to { color: var(--muted); font-weight: 400; }
 .meta { display: flex; gap: 14px; color: var(--muted); font-size: 14px; margin: 4px 0 12px; }
 .tw { color: var(--muted); font-size: 14px; padding: 6px 0 6px 2px; }
+.tw.warn { color: var(--warn); font-weight: 600; }
+.opt #acc .ic { width: 16px; height: 16px; }
 .ride { --c: #444; }
 .tr { display: grid; grid-template-columns: 68px 14px 1fr; gap: 8px; align-items: center; padding: 3px 0; }
 .tr time { font-weight: 600; font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }

@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -304,6 +304,7 @@ const ALERT_MINS = [3, 5, 10, 15];
 // How sure we are about a bus, in words: cancelled / detour / just left / signal lost / not tracked, else stops away and late/early/on time
 const isComing = (a) => !a.cancelled && !a.skipped && !a.gone;
 const canBoard = (a) => isComing(a) && !a.ends; // a trip ending at this stop only drops off
+const contText = (c) => `Continues as Route ${esc(c.route)} to ${esc(c.headsign)}`; // the same bus carries on as another trip
 // From the history: how this bus tends to run at this stop at this hour
 const usualText = (a) => {
   const u = a.usual;
@@ -314,7 +315,7 @@ function statusOf(a) {
   if (a.skipped) return '<em class="bad">Not stopping here (detour)</em>';
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
-  const ends = a.ends ? 'Drop-off only' : '';
+  const ends = a.ends ? (a.continuesAs ? contText(a.continuesAs) : 'Drop-off only') : '';
   if (!a.tracked) return [ends, 'Not tracked yet', usualText(a)].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
   return [ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
@@ -625,6 +626,10 @@ $('#swap').onclick = () => {
   planTrip();
 };
 $('#when').onchange = () => planTrip();
+let accessible = store.get('accessible', false); // synced like the other plan prefs
+const showAccessible = () => { $('#acc').classList.toggle('on', accessible); $('#acc').setAttribute('aria-pressed', accessible); };
+$('#acc').onclick = () => { accessible = !accessible; store.set('accessible', accessible); showAccessible(); planTrip(); };
+showAccessible();
 // Leave now, depart at a time, or arrive by a time; the picker only appears for the last two, so it's never a blank box
 let leaveMode = 'now';
 const setLeave = (mode) => {
@@ -644,7 +649,7 @@ async function planTrip() {
   $('#trip').innerHTML = '<div class="empty">Planning…</div>';
   const t = $('#when').value ? Math.floor(new Date($('#when').value).getTime() / 1000) : 0;
   let r;
-  try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}`); }
+  try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
   trips = r;
@@ -673,7 +678,7 @@ function tripCard(r, i) {
   const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
   const legs = r.legs.map((l) => l.type === 'walk'
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
-    : `<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
+    : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
         <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small></div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
@@ -925,7 +930,7 @@ const refreshAll = () => Promise.all([refreshPins().then(loadAlerts), refreshNea
 // Another device changed a synced setting: re-read them in place (no reload, so the tab, open sheets and the map stay put)
 function applySynced() {
   pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {}); commutes = store.get('commutes', []);
-  shown = store.get('shownRoutes', null); stopAlerts = store.get('stopAlerts', {}); stopSort = store.get('stopSort', 'mine');
+  accessible = store.get('accessible', false); showAccessible(); shown = store.get('shownRoutes', null); stopAlerts = store.get('stopAlerts', {}); stopSort = store.get('stopSort', 'mine');
   seenAlerts = new Set(store.get('seenAlerts', [])); loadAlerts();
   renderPlaces(); renderCommutes(); syncCommutes(); applyRouteFilter();
 }

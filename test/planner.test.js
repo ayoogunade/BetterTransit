@@ -70,3 +70,69 @@ test('arriveBy never starts before now', () => {
 test('options is empty when there is no route', () => {
   assert.deepStrictEqual(plan.options(at(52.0), at(50.0), 3500, services), []);
 });
+
+// ---- accessibility, block successors and risky transfers ----
+const wc = (id, lat, wb, parent) => ({ ...mk(id, lat), wheelchair_boarding: wb, parent_station: parent || '' });
+const net = (stopList, tripList, tripStopList) => createPlanner({ stops: stopList, trips: tripList, tripStops: tripStopList });
+const rideTrips = (r) => r.legs.filter((l) => l.type === 'ride').map((l) => l.trip);
+
+test('accessible skips trips marked wheelchair_accessible 2', () => {
+  const p = net([mk('A', 52.0), mk('C', 52.02)],
+    { u1: { service_id: 's', wheelchair_accessible: '2' }, u2: { service_id: 's', wheelchair_accessible: '1' } },
+    { u1: seq(['A', 'C'], [3600, 4200]), u2: seq(['A', 'C'], [4200, 4800]) });
+  assert.deepStrictEqual(rideTrips(p(at(52.0), at(52.02), 3500, services)), ['u1']);
+  assert.deepStrictEqual(rideTrips(p(at(52.0), at(52.02), 3500, services, undefined, true)), ['u2']);
+  assert.deepStrictEqual(p.options(at(52.0), at(52.02), 3500, services, undefined, 4, undefined, true).map((o) => rideTrips(o)[0]), ['u2']);
+  assert.deepStrictEqual(p.arriveBy(at(52.0), at(52.02), 5000, services, undefined, undefined, 3, true).map((o) => rideTrips(o)[0]), ['u2']);
+});
+
+test('accessible avoids stops that are not wheelchair accessible, inheriting from the parent when unknown', () => {
+  const hub = { stop_id: 'P', stop_lat: '52.02', stop_lon: '-106.6', location_type: '1', wheelchair_boarding: '2' };
+  const tr = { u: { service_id: 's' } }, ts = { u: seq(['A', 'C'], [3600, 4200]) };
+  const p = net([mk('A', 52.0), hub, wc('C', 52.02, '0', 'P')], tr, ts);
+  assert.strictEqual(rideTrips(p(at(52.0), at(52.02), 3500, services)).length, 1);
+  assert.strictEqual(p(at(52.0), at(52.02), 3500, services, undefined, true), null); // C inherits the hub's 2
+  const own = net([mk('A', 52.0), hub, wc('C', 52.02, '1', 'P')], tr, ts);
+  assert.strictEqual(rideTrips(own(at(52.0), at(52.02), 3500, services, undefined, true)).length, 1); // its own 1 wins
+});
+
+test('successor links a trip to the next one in its block on the same service', () => {
+  const b = { service_id: 's', block_id: 'X' };
+  const p = net([mk('A', 52.0), mk('B', 52.01), mk('C', 52.02)],
+    { b1: b, b2: b, b3: { ...b, service_id: 'other' }, b4: { service_id: 's', block_id: 'Y' } },
+    { b1: seq(['A', 'B'], [3600, 3900]), b2: seq(['B', 'C'], [3900, 4200]), b3: seq(['B', 'C'], [5000, 5200]), b4: seq(['B', 'C'], [5000, 5200]) });
+  assert.deepStrictEqual(p.successor, { b1: 'b2' });
+});
+
+test('transfers: a block successor boarded where you got off is a stay-on, not a transfer', () => {
+  const b = { service_id: 's', block_id: 'X' };
+  const p = net([mk('A', 52.0), mk('B', 52.01), mk('C', 52.02)], { b1: b, b2: b },
+    { b1: seq(['A', 'B'], [3600, 3900]), b2: seq(['B', 'C'], [3900, 4200]) });
+  const r = p(at(52.0), at(52.02), 3500, services);
+  const x = p.transfers(r.legs, { route: () => '1', usual: () => null });
+  assert.deepStrictEqual(r.legs.map((l, i) => l.type === 'ride' && !!(x[i] && x[i].stayOn)).filter((_, i) => r.legs[i].type === 'ride'), [false, true]);
+});
+
+test('transfers: a tight connection on a route that runs late is risky, a roomy one is not', () => {
+  const ride = (trip, stopIds, times) => ({ type: 'ride', trip, stops: stopIds, from: 0, to: 1, times });
+  const legs = (slack) => [ride('t1', ['A', 'C'], [3600, 4200]), { type: 'walk', secs: 60, from: 'C', to: 'D' }, ride('t3', ['D', 'E'], [4260 + slack, 4800 + slack])];
+  const route = (t) => (t === 't1' ? '8' : '14');
+  const calls = [];
+  const usual = (r, s, h) => (calls.push([r, s, h]), { avg: 2, late: 35, n: 9 });
+  const check = (l, u = usual) => plan.transfers(l, { route, usual: u });
+  assert.deepStrictEqual(check(legs(120))[2].risk, { late: 35, slackMins: 2, route: '8' });
+  assert.deepStrictEqual(calls[0], ['8', 'C', 1]); // incoming route, where you get off, hour of arrival
+  assert.strictEqual(check(legs(600))[2], undefined);
+  assert.strictEqual(check(legs(120), () => ({ avg: 0, late: 10, n: 9 }))[2], undefined); // reliable route
+  assert.strictEqual(check(legs(120), () => null)[2], undefined); // no history
+  assert.ok(check(legs(200), () => ({ avg: 5, late: 20, n: 9 }))[2]); // slack under the usual delay
+});
+
+test('preferSafe puts a non-risky option first when two arrive within 5 minutes', () => {
+  const o = (arrive, risk) => ({ arrive, legs: [{ type: 'ride', ...(risk && { risk: { late: 40, slackMins: 1 } }) }] });
+  const [a, b, c] = [o(1000, true), o(1200), o(2000)];
+  assert.deepStrictEqual(plan.preferSafe([a, b, c]), [b, a, c]);
+  const [d, e] = [o(1000, true), o(1400)];
+  assert.deepStrictEqual(plan.preferSafe([d, e]), [d, e]); // 400 s apart: keep the order
+  assert.deepStrictEqual(plan.preferSafe([e, d]), [e, d]);
+});
