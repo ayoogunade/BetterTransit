@@ -342,3 +342,24 @@ header { align-items: center; }
 .rbtn { flex: none; padding: 6px 10px; font-size: 13px; margin-left: auto; }
 .livebar { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--warn); font-size: 14px; font-weight: 600; }
 .livebar .ic { width: 16px; height: 16px; flex: none; }
+.livebar[hidden] { display: none; }
+
+/* plan from the map: long-press popup, shown trip, stop timetable */
+#mapbox { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.pinpop { display: flex; flex-direction: column; gap: 2px; margin: -4px -6px; }
+.pinpop button { display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 10px 8px; font-size: 15px; font-weight: 600; text-align: left; min-height: 44px; }
+.pinpop .ic { width: 18px; height: 18px; }
+#map { position: relative; }
+#tripbar { position: absolute; left: 10px; bottom: 10px; z-index: 1000; display: flex; align-items: center; gap: 4px; background: var(--card); border-radius: 999px; box-shadow: 0 2px 8px rgba(0,0,0,.25); padding: 2px 4px 2px 14px; font-size: 14px; font-weight: 600; }
+#tripbar[hidden] { display: none; }
+#tripbar button { border: 0; background: none; color: var(--muted); min-width: 40px; min-height: 40px; display: flex; align-items: center; justify-content: center; }
+#tripbar .ic { width: 20px; height: 20px; }
+.dirs input[type=date] { flex: none; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 5px 12px; font-size: 13px; }
+.dirs input[type=date]:focus { outline-offset: 0; }
+.ttgroup { padding: 10px 14px 12px; border-bottom: 1px solid var(--line); }
+.tthead { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.tthead b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ttgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 4px; }
+.ttgrid span { font-size: 13px; font-variant-numeric: tabular-nums; text-align: center; padding: 5px 0; border-radius: 6px; background: var(--bg); white-space: nowrap; }
+.ttgrid span.past { opacity: .4; }
+.ttgrid span.next { background: var(--accent); color: #fff; font-weight: 700; }
