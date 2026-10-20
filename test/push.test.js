@@ -137,7 +137,7 @@ test('a commute notifies when the leave time is inside the lead time, with the b
 });
 
 test('a commute push adds the feels-like temperature only when it is cold, and survives the weather being down', async () => {
-  for (const [id, wx, tail] of [['w1', { feels: -35, cold: true }, / · feels like -35°C$/], ['w2', { feels: -5, cold: false }, /Confederation from Clarence at [^·]*· arrive [^·]*$/], ['w3', null, /arrive [^·]*$/]]) {
+  for (const [id, wx, tail] of [['w1', { feels: -35, cold: true }, / · feels like -35°F$/], ['w2', { feels: -5, cold: false }, /Confederation from Clarence at [^·]*· arrive [^·]*$/], ['w3', null, /arrive [^·]*$/]]) {
     sent.length = 0;
     const push = createPush({ arrivals: async () => [], plan: async () => option(now() + 200), weather: async () => wx, checkEveryMs: 1e9 });
     push.watch(commute({ commuteId: id }));

@@ -5,10 +5,10 @@ const createWeather = require('../weather');
 const ok = (feels, temp = feels + 8) => async () => ({ ok: true, json: async () => ({ current: { temperature_2m: temp, apparent_temperature: feels, wind_speed_10m: 14.4 } }) });
 const clockAt = () => { const c = { t: 0, now: () => c.t }; return c; };
 
-test('rounds the reading and flags cold at -20 feels-like or colder', async () => {
+test('rounds the reading and flags cold at -4 °F feels-like or colder', async () => {
   assert.deepStrictEqual(await createWeather({ fetch: ok(-34.6, -27.2) })(), { temp: -27, feels: -35, wind: 14, cold: true });
-  assert.strictEqual((await createWeather({ fetch: ok(-20) })()).cold, true);
-  assert.strictEqual((await createWeather({ fetch: ok(-19.9) })()).cold, false);
+  assert.strictEqual((await createWeather({ fetch: ok(-4) })()).cold, true);
+  assert.strictEqual((await createWeather({ fetch: ok(-3.9) })()).cold, false);
 });
 
 test('caches for 15 minutes and shares one request in flight', async () => {

@@ -106,7 +106,7 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
     if (!ride || w.sent[ride.trip] || o.leave - now > w.minutes * 60) return true;
     w.sent[ride.trip] = now;
     const mins = Math.max(0, Math.round((o.leave - now) / 60)), wx = await weather().catch(() => null);
-    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}${ride.last ? ' · last bus' : ''}${wx && wx.cold ? ` · feels like ${wx.feels}°C` : ''}` }));
+    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}${ride.last ? ' · last bus' : ''}${wx && wx.cold ? ` · feels like ${wx.feels}°F` : ''}` }));
   }
 
   // Ride watch: "your stop is next" once the bus is at the stop before yours. Returns false if the watch should be dropped.

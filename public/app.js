@@ -703,7 +703,7 @@ async function planTrip() {
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
   trips = r; planEnds = { from: place.from, to: place.to }; // what "Show on map" draws walks to (place can change before the next plan)
-  $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°C feels like ${wx.feels}°C · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
+  $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°F feels like ${wx.feels}°F · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
 }
 let trips = [], planEnds = null;
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
