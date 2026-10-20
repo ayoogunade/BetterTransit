@@ -132,6 +132,11 @@ const noteDelay = (key, base, stopId, st, last, weekend) => {
   recorded.add(key);
   history.record(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24, last.time - base.sched);
 };
+// "This bus continues as the 14 to X": the next trip on the same bus (block), shown where a trip ends
+const continuesAs = (tripId) => {
+  const n = trips[plan.successor[tripId]], r = n && routes[n.route_id];
+  return n && { route: r && r.route_short_name, headsign: n.trip_headsign };
+};
 const shape = (tripId, time, live) => {
   const t = trips[tripId] || {};
   const r = routes[t.route_id] || {};
@@ -197,7 +202,7 @@ async function rideProgress(tripId) {
 //   sched: timetable time, so delay = time - sched (positive = late, negative = early); stopsAway when the bus is on this trip
 //   cancelled / skipped (detour) are listed so you know not to wait; gone: just passed this stop (shown briefly)
 //   stale: the feed dropped the trip, this is its last prediction; neither tracked nor stale = timetable only
-//   ends: this is the trip's last stop (drop-off only)
+//   ends: this is the trip's last stop (drop-off only); continuesAs: {route, headsign} when the same bus carries on as another trip
 //   last: the last scheduled trip of this route+headsign from here today
 async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
@@ -210,7 +215,7 @@ async function arrivalsAt(stopId) {
     const sched = localMidnight + st.t;
     if (!t || !services.has(t.service_id) || sched < now - 3600 || sched > now + 3 * 3600) continue; // an hour back: late buses still count
     const sts = tripStops[st.trip], idx = sts.findIndex((x) => x.stop === stopId && x.t === st.t), s = byTrip.get(st.trip);
-    const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true }), ...(lastOf.get(tripKey(t)) === st.trip && { last: true }) }; // ends: last stop, you can't board it
+    const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true, ...(continuesAs(st.trip) && { continuesAs: continuesAs(st.trip) }) }), ...(lastOf.get(tripKey(t)) === st.trip && { last: true }) }; // ends: last stop, you can't board it
     const usual = history.usual(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24); // how this bus tends to run at this hour
     if (usual) base.usual = usual;
     if (s && s.cancelled) { if (sched > now - 60) out.push({ ...base, cancelled: true }); continue; }
@@ -310,7 +315,7 @@ async function tripTimeline(tripId) {
   if (!sts || !t) return null;
   const now = Math.floor(Date.now() / 1000), times = await liveTimes(), live = times.get(tripId), r = routes[t.route_id] || {};
   return {
-    trip: tripId, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null,
+    trip: tripId, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
     stops: sts.map((st, i) => ({ id: st.stop, name: nameOf(st.stop), time: realTime(live ? live[i] : st.t, now) })),
   };
 }
@@ -361,28 +366,32 @@ const realTime = (t, near) => {
   return [mid + t, mid + t - 86400, mid + t + 86400].sort((a, b) => Math.abs(a - near) - Math.abs(b - near))[0];
 };
 
-async function planTrip(from, to, departAt, arriveBy = 0) {
+async function planTrip(from, to, departAt, arriveBy = 0, accessible = false) {
   const now = Math.floor(Date.now() / 1000);
   const when = arriveBy ? Math.max(now, arriveBy - 2 * 3600) : departAt && departAt > now ? departAt : now;
   const localMidnight = Math.floor((when + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const services = activeServices(new Date((when + TZ_OFFSET_SEC) * 1000));
   const live = when - now < 2 * 3600 ? await liveTimes() : new Map(); // delays only matter for near-term trips
   const abs = (t) => localMidnight + t, day = dayOf(when);
-  const opts = arriveBy ? plan.arriveBy(from, to, arriveBy - localMidnight, services, live, when - localMidnight) : plan.options(from, to, when - localMidnight, services, live);
-  return opts.map((r) => ({
+  const opts = arriveBy ? plan.arriveBy(from, to, arriveBy - localMidnight, services, live, when - localMidnight, undefined, accessible) : plan.options(from, to, when - localMidnight, services, live, undefined, undefined, accessible);
+  const weekend = [0, 6].includes(new Date((when + TZ_OFFSET_SEC) * 1000).getUTCDay());
+  const routeOf = (tid) => (routes[trips[tid].route_id] || {}).route_short_name;
+  return plan.preferSafe(opts.map((r) => {
+    const x = plan.transfers(r.legs, { route: routeOf, usual: (rt, stop, hour) => history.usual(rt, stop, weekend, hour) }); // per leg: stayOn / risk
+    return {
     leave: abs(r.leave),
     arrive: abs(r.arrive),
-    legs: r.legs.map((l) => {
+    legs: r.legs.map((l, i) => {
       if (l.type === 'walk') return { type: 'walk', mins: Math.max(1, Math.round(l.secs / 60)), to: l.to ? nameOf(l.to) : null };
       const t = trips[l.trip], rt = routes[t.route_id] || {};
       const b = stopOf(l.stops[l.from]), a = stopOf(l.stops[l.to]); // boarding stop, so the app can pin it or set an alert for this bus there; alighting stop for "get off" alerts
       return { type: 'ride', live: l.live, trip: l.trip, route: rt.route_short_name, color: rt.route_color, headsign: t.trip_headsign, from: nameOf(l.stops[l.from]), to: nameOf(l.stops[l.to]), dep: abs(l.times[l.from]), arr: abs(l.times[l.to]), stops: l.to - l.from,
         board: { id: b.stop_id, name: b.stop_name, lat: +b.stop_lat, lon: +b.stop_lon }, boardIdx: l.from,
         alight: { id: a.stop_id, name: a.stop_name, lat: +a.stop_lat, lon: +a.stop_lon, idx: l.to },
-        ...(lastTrips(b.stop_id, services, day).get(tripKey(t)) === l.trip && { last: true }) };
+        ...(lastTrips(b.stop_id, services, day).get(tripKey(t)) === l.trip && { last: true }), ...x[i] };
     }),
     finalWalkMins: Math.round(r.finalWalk / 60),
-  }));
+  }; }));
 }
 
 // ---------- http ----------
@@ -448,7 +457,7 @@ const server = http.createServer(async (req, res) => {
     if ((m = p.match(/^\/api\/route\/(.+)\/stops$/))) return json(res, search.routeStops(decodeURIComponent(m[1])));
     if (p === '/api/plan') {
       const ll = (k) => { const [lat, lon] = (u.searchParams.get(k) || '').split(',').map(Number); return { lat, lon }; };
-      return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0, +u.searchParams.get('arrive') || 0));
+      return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0, +u.searchParams.get('arrive') || 0, u.searchParams.get('accessible') === '1'));
     }
     if (p === '/api/alerts') return json(res, await alerts());
     if (p === '/api/routemap') return json(res, Object.fromEntries((u.searchParams.get('routes') || '').split(',').filter(Boolean).slice(0, 80).map((r) => [r, routeMap(r)])), 200, req);

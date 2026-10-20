@@ -252,7 +252,7 @@ test('a ride watch is dropped silently when you are past the stop, the bus is ca
     assert.strictEqual(sent.length, 0);
     assert.ok(!push.has(ride()));
   }
-  const gone = createPush({ arrivals: async () => [], progress: async () => ({ live: false, next: undefined, cancelled: false }), checkEveryMs: 1e9 });
+  const gone = createPush({ arrivals: async () => [], progress: async () => ({ live: false, next: undefined, cancelled: false, time: () => now() - 60 }), checkEveryMs: 1e9 });
   const w = ride({ tripId: 'GONE' });
   gone.watch(w);
   await gone.check();
@@ -260,6 +260,15 @@ test('a ride watch is dropped silently when you are past the stop, the bus is ca
   w.missing = now() - 301; // not in the feed for over 5 min (the watch object is the stored one)
   await gone.check();
   assert.ok(!gone.has(w));
+});
+
+test('a ride watch set before the trip is in the feed waits for it instead of giving up', async () => {
+  const push = createPush({ arrivals: async () => [], progress: async () => ({ live: false, next: undefined, cancelled: false, time: () => now() + 1200 }), checkEveryMs: 1e9 });
+  const w = ride({ tripId: 'LATER' });
+  push.watch(w);
+  w.missing = now() - 600; // even after a long absence: the bus isn't due at your stop for 20 min
+  await push.check();
+  assert.ok(push.has(w));
 });
 
 test('a ride watch gives up after three hours', async () => {
@@ -325,6 +334,15 @@ test('a cancelled connection counts as missed, and with no alternative the push 
   assert.strictEqual(sent.length, 1);
   assert.match(sent[0].title, /miss the 60/);
   assert.match(sent[0].body, /No other bus/);
+});
+
+test('when the re-plan still picks the same connection, the push says hurry instead of take something else', async () => {
+  sent.length = 0;
+  const r = rescue(300, 400, { alt: [{ leave: 0, arrive: now() + 1500, legs: [{ type: 'ride', trip: 'N', route: '60', dep: now() + 400 }] }] });
+  await r.push.check();
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].title, 'Tight connection to the 60');
+  assert.match(sent[0].body, /Hurry to Broadway: it leaves at/);
 });
 
 test('commute pushes say when the bus is the last one', async () => {

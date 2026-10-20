@@ -93,7 +93,8 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
     if (now - w.since > 3 * 3600) return false;
     let p;
     try { p = await progress(w.tripId); } catch { return true; } // feed hiccup: try again next tick
-    if (!p || !p.live) { w.missing ||= now; return now - w.missing < 300; } // trip left the feed: give up after 5 min
+    // not in the feed: before it is due at your stop it may just not have started yet; after that, give up after 5 min
+    if (!p || !p.live) { if (p && now < p.time(w.alightIdx)) return true; w.missing ||= now; return now - w.missing < 300; }
     delete w.missing;
     if (p.cancelled || p.next === null || p.next > w.alightIdx) return false; // cancelled, finished, or you are past your stop
     if (p.next === undefined) return true; // no predictions yet
@@ -112,6 +113,8 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
     if (!opts) return; // planner down: try again next tick
     w.rescued = true;
     const o = opts[0], r = o && o.legs.find((l) => l.type === 'ride');
+    // the planner has no minute of margin, so it may still pick the same bus: that's a tight connection, not a missed one
+    if (r && r.trip === n.tripId) return void (await send(w, { title: `Tight connection to the ${n.route}`, body: `Hurry to ${n.stopName || w.stopName}: it leaves at ${clock(r.dep)}` }));
     await send(w, { title: `You'll miss the ${n.route} at ${n.stopName || w.stopName}`, body: r ? `Take the ${r.route} ${r.headsign || ''} at ${clock(r.dep)} instead · arrive ${clock(o.arrive)}` : 'No other bus found from here' });
   }
 
