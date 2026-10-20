@@ -753,7 +753,7 @@ function tripCard(r, i) {
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
     : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
         <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small>
-          ${l.alight ? `<button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button>` : ''}</div>
+          ${l.alight ? `<div class="rbtns"><button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button></div>` : ''}</div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
   const first = rides[0], act = first && first.trip ? `<div class="btnrow"><button class="btn ${isStopPinned(first.board) ? 'on' : ''}" data-tpin="${i}">${tripPinLabel(first)}</button>
