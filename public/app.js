@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -88,6 +88,7 @@ function showTab(t) {
   history.replaceState(history.state, '', '#' + t);
   if (t === 'map') loadLeaflet().then(() => { initMap(); map.invalidateSize(); refreshMap(); }, () => toast('Map unavailable'));
   if (t === 'alerts') refreshAlerts();
+  showLiveBar();
   if (t === 'plan') loadSlotMins();
   window.scrollTo(0, 0);
 }
@@ -402,6 +403,7 @@ async function refreshPins() {
       routePins.length ? api('/api/vehicles?routes=' + routePins.map((r) => encodeURIComponent(r.short)).join(',')) : [],
     ]);
     pinRoutes = new Set([...lists.flat().map((a) => a.route), ...routePins.map((r) => r.short)]);
+    syncRouteAlerts(); // no-op unless the routes or stops changed
     pinLists = new Map(pins.map((p, i) => [p.id, lists[i]])); pinBuses = buses;
     renderPins();
     updatedAt = Date.now() / 1000; offline = false;
@@ -487,6 +489,17 @@ async function mirrorWatches(hereKey, wanted, gone, create = false) {
 }
 const syncStopAlerts = () => mirrorWatches('alertsHere', Object.fromEntries(Object.keys(stopAlerts).map((id) => [id, stopWatch(id)])), (id) => ({ stopId: id }));
 
+// Push new service alerts on your routes (routes of pinned stops and pinned routes, plus pinned stops). Synced on/off; each device
+// registers its own watch, re-sent only when the routes or stops change (the server re-primes then, so old alerts are not announced).
+let routeAlerts = store.get('routeAlerts', false), routeAlertsSig = null;
+const alertsWatch = () => ({ alerts: true, routes: [...pinRoutes], stopIds: pins.map((p) => p.id), minutes: 1 });
+async function syncRouteAlerts(create = false) {
+  const w = alertsWatch(), sig = routeAlerts && JSON.stringify([w.routes, w.stopIds]);
+  if (!create && sig === routeAlertsSig) return true;
+  const ok = await mirrorWatches('routeAlertsHere', routeAlerts ? { alerts: w } : {}, () => ({ alerts: true }), create);
+  if (ok) routeAlertsSig = sig;
+  return ok;
+}
 // One bell per stop opens this: how many minutes ahead, every bus at the stop (pinned stops only), or just one of the next buses.
 function openAlertSheet(stop, arrivals) {
   let mins = stopAlerts[stop.id] || 5, busy = false;
@@ -931,7 +944,8 @@ async function refreshAlerts() {
   if (!alertList) return ($('#alerts').innerHTML = '<div class="empty">Alerts need a connection.</div>');
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
-  $('#alerts').innerHTML = filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => `<div class="card alert" role="button" tabindex="0" aria-expanded="false">
+  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div></div>`;
+  $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => `<div class="card alert" role="button" tabindex="0" aria-expanded="false">
     <h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${seenAlerts.has(alertKey(x)) ? '' : '<span class="chip new">New</span>'}${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
     <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
     <p class="peek">${esc((x.description || '').replace(/\s+/g, ' '))}</p><p class="desc">${esc(x.description).replace(/\r?\n/g, '<br>')}</p><span class="readmore">${icon('chevron-down')}</span></div>`).join('') : `<div class="empty">No active alerts${hidden ? ' for your routes' : ''}.</div>`);
@@ -941,17 +955,35 @@ async function refreshAlerts() {
 }
 $('#alerts').onclick = (e) => {
   if (e.target.closest('[data-editroutes]')) return openRoutesSheet();
+  if (e.target.closest('[data-routealerts]')) return toggleRouteAlerts();
   const c = e.target.closest('.alert');
   if (c) c.setAttribute('aria-expanded', c.classList.toggle('open'));
 };
 
+async function toggleRouteAlerts() {
+  routeAlerts = !routeAlerts;
+  if (!(await syncRouteAlerts(routeAlerts)) && routeAlerts) { routeAlerts = false; return refreshAlerts(); } // no permission / no subscription: stay off
+  store.set('routeAlerts', routeAlerts); refreshAlerts();
+  toast(routeAlerts ? 'You will be notified of new alerts on your routes' : 'Alert notifications off');
+}
+
+// ---------- live data status ----------
+// The server says how old its realtime feeds are; if trip updates or vehicles are over ~2 min old the times shown are the schedule.
+// (When the app itself is offline the header already says Offline, so no second message.)
+let liveDown = false;
+function showLiveBar() { $('#livebar').hidden = !liveDown || offline || $('#alerts').hidden === false; }
+async function checkLive() {
+  try { const s = await api('/api/status'); liveDown = [s.tripUpdates, s.vehicles].some((a) => a === null || a > 120); } catch { liveDown = false; }
+  showLiveBar();
+}
+
 // ---------- refreshing ----------
-const refreshAll = () => Promise.all([refreshPins().then(loadAlerts), refreshNearby(), map && !$('#map').hidden && refreshMap()]);
+const refreshAll = () => Promise.all([refreshPins().then(loadAlerts).then(checkLive), refreshNearby(), map && !$('#map').hidden && refreshMap()]);
 // Another device changed a synced setting: re-read them in place (no reload, so the tab, open sheets and the map stay put)
 function applySynced() {
   pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {}); commutes = store.get('commutes', []);
   accessible = store.get('accessible', false); showAccessible(); shown = store.get('shownRoutes', null); stopAlerts = store.get('stopAlerts', {}); stopSort = store.get('stopSort', 'mine');
-  seenAlerts = new Set(store.get('seenAlerts', [])); loadAlerts();
+  seenAlerts = new Set(store.get('seenAlerts', [])); loadAlerts(); routeAlerts = store.get('routeAlerts', false); syncRouteAlerts();
   renderPlaces(); renderCommutes(); syncCommutes(); applyRouteFilter();
 }
 $('#updated').onclick = () => { $('#updated').textContent = 'Refreshing…'; refreshAll(); };
@@ -983,7 +1015,7 @@ document.addEventListener('keydown', (e) => {
 if (pins.length || routePins.length) $('#pins').innerHTML = skeleton(Math.min(4, pins.length + routePins.length)); // until the first fetch lands
 const startTab = location.hash.slice(1);
 if (TABS.includes(startTab) && startTab !== 'pinned') showTab(startTab);
-refreshPins().then(loadAlerts); refreshNearby();
+refreshPins().then(loadAlerts).then(checkLive); refreshNearby();
 setInterval(refreshAll, 20000);
 syncNow(); setInterval(syncNow, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncNow(); refreshAll(); } });

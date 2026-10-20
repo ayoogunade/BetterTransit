@@ -340,3 +340,5 @@ header { align-items: center; }
 .lastbus { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .lastbus .ic { width: 13px; height: 13px; }
 .rbtn { flex: none; padding: 6px 10px; font-size: 13px; margin-left: auto; }
+.livebar { display: flex; align-items: center; gap: 8px; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--warn); font-size: 14px; font-weight: 600; }
+.livebar .ic { width: 16px; height: 16px; flex: none; }

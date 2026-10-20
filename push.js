@@ -2,6 +2,7 @@
 // Three kinds of watch: one trip at a stop (dropped once it has fired), a standing stop watch ({standing: true, routes}) that
 // fires once for every bus of the chosen routes at that stop and stays until removed, and a commute ({commute: true, from, to,
 // days, startMin, endMin}) that plans the trip during its time window and says when to leave for the next bus.
+// A fifth, {alerts: true, routes, stopIds}, pushes each new service alert that names one of those routes or stops (once per alert).
 // A fourth, {ride: true, tripId, alightStopId, alightIdx, ...}, rides along with one bus: "your stop is next" when it nears the stop you get off at.
 // With {next: {tripId, boardStopId, boardIdx, walkSecs, route}, to, alightAt} it also warns, once, if you will miss the connection, and re-plans.
 const fs = require('fs');
@@ -26,8 +27,11 @@ function invalid(w) {
     if (u.protocol !== 'https:' || !PUSH_HOSTS.some((h) => u.hostname === h || u.hostname.endsWith('.' + h))) return 'unknown push service';
   } catch { return 'bad subscription'; }
   if (!w.sub.keys || typeof w.sub.keys.p256dh !== 'string' || typeof w.sub.keys.auth !== 'string') return 'bad subscription';
-  if (!int(w.minutes, 1, 120)) return 'bad minutes';
-  if (w.commute) {
+  if (!w.alerts && !int(w.minutes, 1, 120)) return 'bad minutes';
+  if (w.alerts) {
+    const strs = (a) => Array.isArray(a) && a.length <= 300 && a.every((x) => typeof x === 'string' && x.length < 40);
+    if (!strs(w.routes) || !strs(w.stopIds)) return 'bad alerts';
+  } else if (w.commute) {
     if (typeof w.commuteId !== 'string' || !w.commuteId) return 'bad commute';
     if (!point(w.from) || !point(w.to)) return 'bad places';
     if (!Array.isArray(w.days) || !w.days.length || !w.days.every((d) => int(d, 0, 6))) return 'bad days';
@@ -41,14 +45,14 @@ function invalid(w) {
   return null;
 }
 
-module.exports = function createPush({ arrivals, progress = async () => null, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
+module.exports = function createPush({ arrivals, alerts = async () => [], progress = async () => null, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
   webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://34-46-182-45.sslip.io', keys.publicKey, keys.privateKey);
 
   let watches = loadJson(WATCHES, []); // {sub, stopId, tripId, minutes, route, headsign, stopName} or {sub, stopId, standing, routes, minutes, stopName, sent}
-  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && (a.alightStopId || a.stopId) === (b.alightStopId || b.stopId) && !!a.ride === !!b.ride && a.tripId === b.tripId && a.commuteId === b.commuteId;
+  const same = (a, b) => a.sub.endpoint === b.sub.endpoint && (a.alightStopId || a.stopId) === (b.alightStopId || b.stopId) && !!a.ride === !!b.ride && !!a.alerts === !!b.alerts && a.tripId === b.tripId && a.commuteId === b.commuteId;
   const clock = (t) => { const d = new Date((t + tzOffsetSec) * 1000), h = d.getUTCHours(); return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
   // watches that notify once per trip remember which ones, for six hours
   const prune = (w, now) => { w.sent ||= {}; for (const [trip, at] of Object.entries(w.sent)) if (now - at > 6 * 3600) delete w.sent[trip]; };
@@ -69,6 +73,23 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
       w.sent[a.trip] = now;
       const mins = Math.max(0, Math.round((a.time - now) / 60));
       if (await send(w, { title: `Route ${a.route} ${mins <= 0 ? 'is due' : `in ${mins} min`}`, body: `${a.headsign || ''} at ${w.stopName}${a.live ? '' : ' (scheduled)'}` })) return false;
+    }
+    return true;
+  }
+
+  // Alerts watch: push each active alert naming one of the watch's routes or stops, once. Alerts can stay up for days, so an id is
+  // remembered while the alert is active (not for 6 h). The first pass, and any change of routes/stops, only records what is already
+  // active so old alerts are not announced. Returns false if the watch should be dropped.
+  async function pingAlerts(w, list, now) {
+    const sig = [...w.routes, '|', ...w.stopIds].join(), live = new Set(list.map((a) => a.id)), prime = w.sig !== sig;
+    w.sent ||= {}; w.sig = sig;
+    for (const id of Object.keys(w.sent)) if (!live.has(id)) delete w.sent[id];
+    for (const a of list) {
+      if (w.sent[a.id]) continue;
+      const route = (a.routes || []).find((r) => w.routes.includes(r)), stop = (a.stops || []).find((s) => w.stopIds.includes(s));
+      if (!prime && !route && !stop) continue;
+      w.sent[a.id] = now;
+      if (!prime && await send(w, { title: route ? `Alert: Route ${route}` : 'Alert: stop', body: a.header || 'Service alert' })) return false;
     }
     return true;
   }
@@ -120,12 +141,14 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
 
   async function check() {
     const now = Date.now() / 1000;
-    const stopIds = [...new Set(watches.filter((w) => !w.commute && !w.ride).map((w) => w.stopId))];
+    const stopIds = [...new Set(watches.filter((w) => !w.commute && !w.ride && !w.alerts).map((w) => w.stopId))];
     const arr = Object.fromEntries(await Promise.all(stopIds.map(async (s) => [s, await arrivals(s).catch(() => null)])));
     // Sends are slow, and watch()/unwatch() can run while we wait on them, so only remove the watches this pass finished with;
     // replacing the whole list would throw away anything added in the meantime.
     const drop = new Set();
+    const al = watches.some((w) => w.alerts) ? await alerts().catch(() => null) : null; // one fetch shared by every alerts watch
     for (const w of [...watches]) {
+      if (w.alerts) { if (al && !(await pingAlerts(w, al, now))) drop.add(w); continue; }
       if (w.commute) { if (!(await pingCommute(w, now))) drop.add(w); continue; }
       if (w.ride) { if (!(await pingRide(w, now))) drop.add(w); continue; }
       if (w.standing) { if (arr[w.stopId] && !(await pingStop(w, arr[w.stopId], now))) drop.add(w); continue; }
@@ -153,7 +176,7 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
     publicKey: keys.publicKey,
     watch(w) { // the app re-registers its watches on every launch: keep what this one already announced
       const old = watches.find((x) => same(x, w));
-      if (old) for (const k of ['sent', 'since', 'rescued']) if (old[k]) w[k] = old[k];
+      if (old) for (const k of ['sent', 'since', 'rescued', 'sig']) if (old[k]) w[k] = old[k];
       watches = watches.filter((x) => x !== old); watches.push(w); save(WATCHES, watches);
     },
     unwatch(w) { watches = watches.filter((x) => !same(x, w)); save(WATCHES, watches); },

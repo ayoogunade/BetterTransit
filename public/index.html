@@ -15,6 +15,7 @@
 <body>
 <header><h1>Better Transit</h1><div class="hdr-r"><button id="updated" aria-label="Refresh"></button><button id="devices-btn" aria-label="Signed-in devices" hidden><i data-icon="smartphone"></i></button><button id="routes-btn" aria-label="Choose which routes to show"><i data-icon="sliders-horizontal"></i></button></div></header>
 <main>
+  <div id="livebar" class="livebar" role="status" hidden><i data-icon="wifi-off"></i> Live times unavailable · showing the schedule</div>
   <section id="pinned">
     <div id="ptr" aria-hidden="true"><i data-icon="refresh-cw"></i></div>
     <div class="sbox"><i class="lead" data-icon="search"></i><input id="pin-search" type="search" placeholder="Search a route (60) or stop" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><div class="suggest" id="pin-suggest"></div></div>

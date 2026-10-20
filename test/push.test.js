@@ -353,3 +353,38 @@ test('commute pushes say when the bus is the last one', async () => {
   await push.check();
   assert.match(sent[0].body, / · last bus$/);
 });
+
+test('alerts watch: primes on registration, then pushes each new matching alert once, and forgets ended ones', async () => {
+  sent.length = 0;
+  let list = [{ id: 'a1', routes: ['60'], stops: [], header: 'Old detour' }];
+  const push = createPush({ arrivals: async () => [], alerts: async () => list, checkEveryMs: 1e9 });
+  const aw = () => ({ sub: { endpoint: 'e9' }, alerts: true, routes: ['60'], stopIds: ['S9'], minutes: 1 });
+  const good = { endpoint: 'https://fcm.googleapis.com/x', keys: { p256dh: 'a', auth: 'b' } };
+  assert.strictEqual(push.invalid({ ...aw(), sub: good }), null);
+  assert.strictEqual(push.invalid({ ...aw(), sub: good, routes: 'x' }), 'bad alerts');
+  push.watch(aw());
+  await push.check();
+  assert.strictEqual(sent.length, 0); // already-active alerts are not announced
+  list = [...list, { id: 'a2', routes: ['17'], stops: [], header: 'Not mine' }, { id: 'a3', routes: [], stops: ['S9'], header: 'Stop closed' }, { id: 'a4', routes: ['60', '17'], stops: [], header: 'Snow' }];
+  await push.check(); await push.check();
+  assert.deepStrictEqual(sent.map((s) => [s.title, s.body]), [['Alert: stop', 'Stop closed'], ['Alert: Route 60', 'Snow']]);
+  push.watch(aw()); // the app re-registers on launch: nothing is repeated
+  await push.check();
+  assert.strictEqual(sent.length, 2);
+  list = [list[3]]; // a1, a2 and a3 ended
+  await push.check();
+  list = [{ id: 'a3', routes: [], stops: ['S9'], header: 'Stop closed' }, list[0]];
+  await push.check();
+  assert.strictEqual(sent.length, 3); // a3 came back after ending, so it is new again; a4 stayed remembered
+});
+
+test('alerts watch: changing routes re-primes instead of announcing old alerts', async () => {
+  sent.length = 0;
+  const list = [{ id: 'b1', routes: ['17'], stops: [], header: 'Old on 17' }];
+  const push = createPush({ arrivals: async () => [], alerts: async () => list, checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'e10' }, alerts: true, routes: ['60'], stopIds: [], minutes: 1 });
+  await push.check();
+  push.watch({ sub: { endpoint: 'e10' }, alerts: true, routes: ['60', '17'], stopIds: [], minutes: 1 });
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+});

@@ -116,6 +116,19 @@ async function feed(name) {
   return age < STALE_MS && c.msg ? c.msg : c.pending;
 }
 
+// Seconds since each feed last downloaded (null: never). Logs once when one goes stale and once when it recovers.
+const FEEDS = { tripUpdates: 'TripUpdate/TripUpdates.pb', vehicles: 'Vehicle/VehiclePositions.pb', alerts: 'Alert/Alerts.pb' };
+const feedStale = {};
+function status() {
+  const out = {};
+  for (const [k, f] of Object.entries(FEEDS)) {
+    const at = cache[f] && cache[f].at, age = at ? Math.round((Date.now() - at) / 1000) : null, stale = age === null || age > 120;
+    if (stale !== !!feedStale[k]) { console.log(`feed ${k} ${stale ? 'stale' : 'recovered'}${age === null ? '' : ` (${age}s old)`}`); feedStale[k] = stale; }
+    out[k] = age;
+  }
+  return out;
+}
+
 // ---------- arrivals ----------
 const lastGood = new Map(); // trip|stop -> {time, seen, tracked} so predictions don't flicker away
 const recorded = new Set(); // trip|stop pairs whose delay has gone into the reliability history (once per bus)
@@ -288,6 +301,8 @@ async function alerts() {
   const text = (ts) => ts && ts.translation && ts.translation[0] && ts.translation[0].text;
   const now = Date.now() / 1000;
   const list = (await feed('Alert/Alerts.pb')).entity.filter((e) => e.alert).map((e) => ({
+    id: e.id,
+    stops: [...new Set((e.alert.informedEntity || []).map((i) => i.stopId).filter(Boolean))],
     start: Number(((e.alert.activePeriod || [])[0] || {}).start || 0),
     header: text(e.alert.headerText),
     description: text(e.alert.descriptionText),
@@ -406,7 +421,7 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
 const history = require('./history')();
-const push = require('./push')({ arrivals: (id) => arrivals(id), progress: rideProgress, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
+const push = require('./push')({ arrivals: (id) => arrivals(id), alerts, progress: rideProgress, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
 const auth = require('./auth')();
 const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
 const body = async (req) => JSON.parse((await text(req)) || '{}');
@@ -459,6 +474,7 @@ const server = http.createServer(async (req, res) => {
       const ll = (k) => { const [lat, lon] = (u.searchParams.get(k) || '').split(',').map(Number); return { lat, lon }; };
       return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0, +u.searchParams.get('arrive') || 0, u.searchParams.get('accessible') === '1'));
     }
+    if (p === '/api/status') return json(res, status());
     if (p === '/api/alerts') return json(res, await alerts());
     if (p === '/api/routemap') return json(res, Object.fromEntries((u.searchParams.get('routes') || '').split(',').filter(Boolean).slice(0, 80).map((r) => [r, routeMap(r)])), 200, req);
     if (p === '/api/routes') return json(res, search.routeList());
@@ -478,5 +494,5 @@ refreshStatic().then(() => {
   setInterval(refreshStatic, 3600 * 1000); // hourly check; only downloads when >24h old
   // Keep the live feeds fresh even when nobody has the app open, so the first request after a quiet spell doesn't wait on the city
   const warm = () => ['TripUpdate/TripUpdates.pb', 'Vehicle/VehiclePositions.pb', 'Alert/Alerts.pb'].forEach((f) => feed(f));
-  warm(); setInterval(warm, 20000);
+  warm(); setInterval(() => { warm(); status(); }, 20000); // status() here so staleness is logged even if nobody asks
 });
