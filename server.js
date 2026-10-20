@@ -40,6 +40,7 @@ function loadStatic() {
   }
   for (const sts of Object.values(tripStops)) sts.sort((a, b) => a.seq - b.seq);
   plan = require('./planner')({ stops, tripStops, trips });
+  timetable = require('./timetable')({ routes, trips, tripStops, stopTimesByStop, childrenOf });
   shapes = {}; routeMapCache = new Map(); // shape_id -> [[lat, lon], ...] (rounded to ~1 m)
   const pts = {};
   for (const r of read('shapes.txt')) (pts[r.shape_id] ||= []).push([+r.shape_pt_sequence, +r.shape_pt_lat, +r.shape_pt_lon]);
@@ -316,7 +317,7 @@ async function tripTimeline(tripId) {
   const now = Math.floor(Date.now() / 1000), times = await liveTimes(), live = times.get(tripId), r = routes[t.route_id] || {};
   return {
     trip: tripId, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
-    stops: sts.map((st, i) => ({ id: st.stop, name: nameOf(st.stop), time: realTime(live ? live[i] : st.t, now) })),
+    stops: sts.map((st, i) => { const s = stopOf(st.stop); return { id: st.stop, name: s.stop_name, lat: +s.stop_lat || null, lon: +s.stop_lon || null, time: realTime(live ? live[i] : st.t, now) }; }), // lat/lon: "Show on map" draws the ride through them
   };
 }
 
@@ -394,6 +395,14 @@ async function planTrip(from, to, departAt, arriveBy = 0, accessible = false) {
   }; }));
 }
 
+// One stop's departures on a local date (default today), grouped by route + headsign; hubs merge their children like arrivals()
+function timetableFor(stopId, dateStr) {
+  const day = dateStr ? timetable.parseDate(dateStr) : new Date(dayOf(Date.now() / 1000) + 'T00:00:00Z');
+  if (!day) return { error: 'bad date' };
+  if (!stops.some((s) => s.stop_id === stopId)) return { error: 'not found' };
+  return { groups: timetable.build(stopId, activeServices(day), day.getTime() / 1000 - TZ_OFFSET_SEC) };
+}
+
 // ---------- http ----------
 const json = (res, data, code = 200, req) => {
   const body = Buffer.from(JSON.stringify(data));
@@ -405,6 +414,7 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
+let timetable; // built after the schedule loads (see loadStatic)
 const history = require('./history')();
 const push = require('./push')({ arrivals: (id) => arrivals(id), progress: rideProgress, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
 const auth = require('./auth')();
@@ -437,6 +447,7 @@ const server = http.createServer(async (req, res) => {
     }
     let m;
     if ((m = p.match(/^\/api\/arrivals\/(.+)$/))) return json(res, await arrivals(decodeURIComponent(m[1])));
+    if ((m = p.match(/^\/api\/timetable\/(.+)$/))) { const r = timetableFor(decodeURIComponent(m[1]), u.searchParams.get('date')); return r.error ? json(res, r, r.error === 'bad date' ? 400 : 404) : json(res, r.groups, 200, req); }
     if (p === '/api/nearby') return json(res, await nearby(+u.searchParams.get('lat'), +u.searchParams.get('lon'), (u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if ((m = p.match(/^\/api\/trip\/(.+)$/))) { const t = await tripTimeline(decodeURIComponent(m[1])); return t ? json(res, t) : json(res, { error: 'not found' }, 404); }
     if (p === '/api/vehicles') return json(res, await vehicles((u.searchParams.get('routes') || '').split(',').filter(Boolean)));

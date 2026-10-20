@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-const $$ = (s) => [...document.querySelectorAll(s)];
+const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
 const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
@@ -236,6 +236,37 @@ async function openTripSheet(tripId, stopId) {
   if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
 }
 
+// Full-screen timetable of one stop for a day: departures grouped by route + headsign as time grids. Today greys the past and scrolls to now.
+const ymd = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Regina' }); // Saskatoon's date: the server's service days are local
+function openTimetableSheet(stop) {
+  const { el, close } = sheetShell('');
+  const today = ymd(Date.now()), tomorrow = ymd(Date.now() + 864e5);
+  el.innerHTML = `<div class="sheet-bar"><div><b>Timetable</b><small>${esc(stop.name)}</small></div><button data-close class="done">Done</button></div>
+    <div class="dirs"><button data-day="${today}">Today</button><button data-day="${tomorrow}">Tomorrow</button><input type="date" value="${today}" aria-label="Pick a date"></div>
+    <div class="sheet-list"></div>`;
+  const list = el.querySelector('.sheet-list'), pick = el.querySelector('input');
+  let seq = 0;
+  async function load(d) {
+    const id = ++seq, now = Date.now() / 1000;
+    $$('.dirs [data-day]', el).forEach((b) => b.classList.toggle('on', b.dataset.day === d)); pick.value = d;
+    list.innerHTML = '<div class="empty" style="padding:16px">Loading…</div>';
+    let g;
+    try { g = await api(`/api/timetable/${encodeURIComponent(stop.id)}?date=${d}`); }
+    catch { if (id === seq) list.innerHTML = '<div class="empty" style="padding:16px">Could not load the timetable. Check your connection.</div>'; return; }
+    if (id !== seq) return; // a newer day was picked meanwhile
+    list.innerHTML = g.map((x) => { const nx = d === today ? x.times.findIndex((t) => t >= now) : -1; return `<div class="ttgroup"><div class="tthead">${badge(x.route, x.color)}<b>${esc(x.headsign)}</b></div>
+      <div class="ttgrid">${x.times.map((t, i) => `<span class="${d === today && t < now ? 'past' : ''} ${i === nx ? 'next' : ''}">${clock(t)}</span>`).join('')}</div></div>`; }).join('') || '<div class="empty" style="padding:16px">No buses stop here on this day.</div>';
+    const first = d === today && list.querySelector('.ttgrid span:not(.past)');
+    if (first) list.scrollTop = first.closest('.ttgroup').getBoundingClientRect().top - list.getBoundingClientRect().top;
+  }
+  el.onclick = (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    const b = e.target.closest('[data-day]'); if (b) load(b.dataset.day);
+  };
+  pick.onchange = () => pick.value && load(pick.value);
+  load(today);
+}
+
 // ---------- routes to show (map + alerts) ----------
 // null = every route; otherwise the short names the user cares about. Pinned routes/stops and an explicit map route search always show.
 let shown = store.get('shownRoutes', null), allRoutes = null;
@@ -353,9 +384,10 @@ function stopCard(p, list, nearby = false) {
     : items.slice(0, lead).join('') + `<div class="more">${items.slice(lead).join('')}</div><button class="morebtn" data-more="${esc(p.id)}">${icon('chevron-down')} <span>${items.length - lead} more</span></button>`;
   const mins = stopAlerts[p.id], belled = mins || list.some((a) => watching.has(watchKey(p.id, a.trip)));
   const bell = `<button class="stopbell ${belled ? 'on' : ''}" data-alerts="${esc(p.id)}" data-nearby="${nearby ? 1 : ''}" aria-label="Alerts for ${esc(p.name)}">${icon(mins ? 'bell-ring' : 'bell')}</button>`;
+  const tt = `<button data-tt="${esc(p.id)}" data-name="${esc(p.name)}" aria-label="Timetable for ${esc(p.name)}">${icon('calendar-clock')}</button>`;
   const act = nearby
-    ? `${bell}<button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
-    : `${mins ? `<small class="dist">${mins} min</small>` : ''}${bell}<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
+    ? `${tt}${bell}<button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
+    : `${mins ? `<small class="dist">${mins} min</small>` : ''}${tt}${bell}<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
   const dist = nearby ? p.dist : myPos && p.lat ? metres(myPos, p) : null;
   return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2><span class="name">${esc(p.name)}</span>${act}</h2>${catchLine(p, list, dist)}${rows}</div>`;
 }
@@ -521,6 +553,7 @@ function openAlertSheet(stop, arrivals) {
 $('#pins').onclick = $('#nearby').onclick = (e) => {
   const t = e.target.closest('button');
   if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
+  if (t.dataset.tt) return openTimetableSheet({ id: t.dataset.tt, name: t.dataset.name });
   if (t.dataset.editroutes !== undefined) return openRoutesSheet();
   if (t.dataset.reorder !== undefined) { reordering = !reordering; return renderPins(); }
   if (t.dataset.move) { // swap with the neighbour; no refetch, so it's instant
@@ -649,16 +682,17 @@ $$('#leave [data-when]').forEach((b) => (b.onclick = () => setLeave(b.dataset.wh
 
 async function planTrip() {
   if (!place.from || !place.to) return;
+  clearTripMap();
   $('#trip').innerHTML = '<div class="empty">Planning…</div>';
   const t = $('#when').value ? Math.floor(new Date($('#when').value).getTime() / 1000) : 0;
   let r;
   try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
-  trips = r;
+  trips = r; planEnds = { from: place.from, to: place.to }; // what "Show on map" draws walks to (place can change before the next plan)
   $('#trip').innerHTML = r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
 }
-let trips = [];
+let trips = [], planEnds = null;
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
 // l: a ride leg, nl: the ride leg after it (if any) and the walk between them, so a missed connection can be rescued
 const rideWatch = (l, nl, walkMins) => ({ ride: true, tripId: l.trip, alightStopId: l.alight.id, alightIdx: l.alight.idx, stopName: l.alight.name, route: l.route, headsign: l.headsign, minutes: 1,
@@ -680,6 +714,7 @@ $('#trip').onclick = async (e) => {
     await toggleWatch({ stopId: l.board.id, stopName: l.board.name, tripId: l.trip, route: l.route, headsign: l.headsign });
     return void b.classList.toggle('on', watching.has(watchKey(l.board.id, l.trip)));
   }
+  if (b?.dataset.showmap) return showTripOnMap(+b.dataset.showmap);
   const c = e.target.closest('.trip-opt'); // tap an option to expand/collapse its steps
   if (c) { c.classList.toggle('open'); c.querySelector('.summary').setAttribute('aria-expanded', c.classList.contains('open')); }
 };
@@ -698,9 +733,10 @@ function tripCard(r, i) {
   // the bus you catch first: pin its stop or get an alert before it arrives there
   const first = rides[0], act = first && first.trip ? `<div class="btnrow"><button class="btn ${isStopPinned(first.board) ? 'on' : ''}" data-tpin="${i}">${tripPinLabel(first)}</button>
     <button class="btn ${watching.has(watchKey(first.board.id, first.trip)) ? 'on' : ''}" data-twatch="${i}">${icon('bell')} Alert for this bus</button></div>` : '';
+  const onMap = `<div class="btnrow"><button class="btn" data-showmap="${i}">${icon('map')} Show on map</button></div>`;
   return `<div class="card trip-opt ${open ? 'open' : ''}"><div class="summary" role="button" tabindex="0" aria-expanded="${open}"><span>${icon('clock')} ${clock(r.leave)}</span><span class="to">${icon('arrow-right')}</span><span>${icon('flag')} ${clock(r.arrive)}</span><span class="chev">${icon('chevron-down')}</span></div>
     <div class="meta"><span class="leavein" data-leavein="${r.leave}">${leaveText(r.leave)}</span><span>${icon('timer')} ${Math.round((r.arrive - r.leave) / 60)} min</span>${rides.length > 1 ? `<span>${icon('repeat')} ${rides.length - 1}</span>` : ''}<span>${icon('footprints')} ${walk} min</span><span class="rb">${rides.map((l) => badge(l.route, l.color)).join('')}</span></div>
-    <div class="legs">${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}${act}</div></div>`;
+    <div class="legs">${legs}${r.finalWalkMins ? `<div class="tw">${icon('footprints')} ${r.finalWalkMins} min</div>` : ''}${act}${onMap}</div></div>`;
 }
 
 // ---------- commutes ----------
@@ -797,7 +833,7 @@ $('#devices-btn').onclick = openDevicesSheet;
 api('/api/sessions').then((r) => { $('#devices-btn').hidden = !r.enabled; }).catch(() => {});
 
 // ---------- map ----------
-let map, lineLayer, dotLayer, busLayer, stopLayer, meMarker, fitNext = false;
+let map, lineLayer, dotLayer, tripLayer, busLayer, stopLayer, meMarker, fitNext = false;
 // Leaflet (public/vendor, from `npm run vendor`) loads the first time the map opens, so it never holds up the app's first paint
 let leaflet;
 const loadLeaflet = () => (leaflet ||= new Promise((ok, no) => {
@@ -819,12 +855,16 @@ function syncSeg() {
 function initMap() {
   if (map) return;
   const CITY = L.latLngBounds([52.05, -106.80], [52.23, -106.50]); // the map can't be panned or zoomed out beyond Saskatoon
-  map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10 }).setView([52.13, -106.65], 12);
+  // tapHold: Leaflet only synthesizes a long-press "contextmenu" when it sees Safari in the UA, which a Home Screen app doesn't
+  // have, so turn it on for any iOS touch device (Android fires a native contextmenu itself, which would double up)
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+  map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10, tapHold: ios }).setView([52.13, -106.65], 12);
   const fitCity = () => map.setMinZoom(Math.max(10, map.getBoundsZoom(CITY))); // zoomed out just far enough to see the whole city
   fitCity(); window.addEventListener('resize', fitCity);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
   lineLayer = L.layerGroup().addTo(map);
   dotLayer = L.layerGroup().addTo(map);
+  tripLayer = L.layerGroup().addTo(map);
   busLayer = L.layerGroup().addTo(map);
   stopLayer = L.layerGroup().addTo(map);
   const far = () => $('#mapbox').classList.toggle('far', map.getZoom() < 13);
@@ -838,6 +878,14 @@ function initMap() {
     if (src && src._route) { if (selBus === e.popup) selBus = null; } else dotOpen = false;
     setTimeout(() => { if (!selBus && !dotOpen) drawRouteLines([]).catch(() => {}); }); // next tick: switching buses opens the new popup first
   });
+  // long-press (right-click on desktop) drops a pin: plan a trip from or to that spot
+  map.on('contextmenu', (e) => {
+    const box = document.createElement('div');
+    box.className = 'pinpop';
+    box.innerHTML = `<button data-k="from">${icon('map-pin')} Plan from here</button><button data-k="to">${icon('flag')} Plan to here</button>`;
+    box.onclick = (ev) => { const k = ev.target.closest('button')?.dataset.k; if (k) { map.closePopup(); planFromMap(k, e.latlng); } };
+    L.popup({ closeButton: false }).setLatLng(e.latlng).setContent(box).openOn(map);
+  });
   $$('.mapbar .seg button').forEach((b) => (b.onclick = () => { mapMode = b.dataset.mode; store.set('mapMode', mapMode); $('#maproute').value = ''; fitNext = mapMode === 'pins'; syncSeg(); refreshMap(); }));
   let t;
   $('#maproute').oninput = () => { clearTimeout(t); t = setTimeout(() => { fitNext = true; syncSeg(); refreshMap(); }, 250); };
@@ -850,6 +898,43 @@ function initMap() {
   };
   syncSeg();
 }
+
+// Set From/To to a map spot (named after a stop within 150 m, else "Dropped pin"), then plan like any other pick
+async function planFromMap(key, ll) {
+  let name = 'Dropped pin';
+  try { const s = (await api(`/api/stops?lat=${ll.lat}&lon=${ll.lng}`))[0]; if (s && metres({ lat: ll.lat, lon: ll.lng }, s) <= 150) name = `${s.name} area`; } catch {}
+  place[key] = { lat: ll.lat, lon: ll.lng }; $('#' + key).value = name;
+  showTab('plan'); planTrip();
+}
+
+// A planned trip on the map: dashed walks between the origin, each ride's stops and the destination, each ride in its route colour.
+// A ride is drawn through its stops (from /api/trip), or straight board -> alight if that can't be fetched.
+async function showTripOnMap(i) {
+  const o = trips[i], ends = planEnds;
+  if (!o || !ends) return;
+  showTab('map');
+  const rides = o.legs.filter((l) => l.type === 'ride');
+  const lines = await Promise.all(rides.map((l) => api('/api/trip/' + encodeURIComponent(l.trip))
+    .then((t) => t.stops.slice(l.boardIdx, l.alight.idx + 1).filter((x) => x.lat != null).map((x) => [x.lat, x.lon])).catch(() => [])));
+  try { await loadLeaflet(); initMap(); } catch { return; }
+  clearTripMap(); map.invalidateSize();
+  const pt = (x) => [x.lat, x.lon], dot = (ll, c, fill) => L.circleMarker(ll, { radius: 6, color: c, weight: 3, fillColor: fill, fillOpacity: 1 }).addTo(tripLayer);
+  const walk = (a, b) => metres({ lat: a[0], lon: a[1] }, { lat: b[0], lon: b[1] }) > 15 && L.polyline([a, b], { color: '#6b7280', weight: 4, dashArray: '2 8', lineCap: 'round' }).addTo(tripLayer);
+  let at = pt(ends.from);
+  rides.forEach((l, k) => {
+    const c = '#' + (l.color || '444'), path = lines[k].length > 1 ? lines[k] : [pt(l.board), pt(l.alight)];
+    walk(at, path[0]);
+    L.polyline(path, { color: c, weight: 6, opacity: 0.9, lineJoin: 'round' }).bindPopup(`<b>Route ${esc(l.route)}</b><br>${esc(l.from)} ${icon('arrow-right')} ${esc(l.to)}`).addTo(tripLayer);
+    dot(path[0], c, '#fff'); dot(path.at(-1), c, '#fff');
+    at = path.at(-1);
+  });
+  walk(at, pt(ends.to));
+  dot(pt(ends.from), '#0a7d3c', '#0a7d3c'); dot(pt(ends.to), '#dc2626', '#dc2626');
+  map.fitBounds(tripLayer.getLayers().reduce((b, m) => b.extend(m.getBounds ? m.getBounds() : m.getLatLng()), L.latLngBounds([pt(ends.from)])).pad(0.2), { maxZoom: 16 });
+  $('#tripbar').hidden = false;
+}
+function clearTripMap() { tripLayer?.clearLayers(); $('#tripbar').hidden = true; }
+$('#tripclose').onclick = clearTripMap;
 
 // Route line + stop dots for the bus you tapped. Geometry comes from /api/routemap and is cached per route.
 const routeGeo = new Map(); // short -> {color, lines: [[lat, lon]...], stops: [[id, name, lat, lon]...]}

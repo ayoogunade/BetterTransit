@@ -12,6 +12,8 @@ Personal Saskatoon transit app. Reads the city's official GTFS + GTFS-realtime f
 - **Commutes**: after planning a trip, tap "Alert me when to leave" to save it with days and hours. During that window the server re-plans every minute and pushes "Leave in N min" for the next bus (walk time included). They sync between devices like pins.
 - **Riding**: on a planned trip, tap "I'm on this bus" on a ride leg to get "Your stop is next" a stop before you get off. If another bus follows, it also warns once when you'll miss the connection and re-plans from where you get off.
 - **Last bus**: arrivals and ride legs are tagged when they're the last scheduled trip of the day on that route and direction; commute alerts add "last bus".
+- **Plan from the map**: long-press the map for "Plan from here / to here" (named after a stop within 150 m, else "Dropped pin"). "Show on map" on a trip card draws it: dashed walks and each ride along its stops.
+- **Timetable**: the calendar button on a stop card opens that stop's full day by route and headsign (Today, Tomorrow or any date); `/api/timetable/:stopId?date=YYYY-MM-DD`.
 - **Reliability**: every tracked bus that passes a stop adds its final delay to `data/history.json` (per route, stop, weekday/weekend and hour). Once a slot has 5+ samples, arrivals say "usually 3 min late" or "late 40% of the time here".
 - **Devices**: with a login set, the phone icon in the header lists every signed-in device and signs one out (its push alerts stop too). Each sign-in is its own session in `data/sessions.json`; changing the password still signs everyone out.
 - Open on your phone: `http://<this-mac-LAN-IP>:3000` → Share → Add to Home Screen. The offline cache (service worker) only activates over HTTPS or localhost.
