@@ -27,3 +27,13 @@ test('the pinned-stop sort choice syncs between devices', () => {
   s.merge({ stopSort: { v: 'next', t: 7 } });
   assert.deepStrictEqual(s.merge().stopSort, { v: 'next', t: 7 });
 });
+
+test('quiet hours sync between devices like the other settings, and get() reads the current value', () => {
+  const f = tmp();
+  const s = createSync(f);
+  const quiet = { on: true, startMin: 1320, endMin: 420, days: [0] };
+  s.merge({ quietHours: { v: quiet, t: 9 } });
+  assert.deepStrictEqual(createSync(f).merge().quietHours, { v: quiet, t: 9 });
+  assert.deepStrictEqual(s.get('quietHours'), quiet);
+  assert.strictEqual(s.get('nothingSetYet'), undefined);
+});

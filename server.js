@@ -444,7 +444,7 @@ let timetable; // built after the schedule loads (see loadStatic)
 const history = require('./history')();
 const weather = require('./weather')();
 const shares = require('./share')();
-const push = require('./push')({ arrivals: (id) => arrivals(id), alerts, progress: rideProgress, weather, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
+const push = require('./push')({ arrivals: (id) => arrivals(id), alerts, progress: rideProgress, weather, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC, quiet: () => sync.get('quietHours') });
 const auth = require('./auth')();
 const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
 const body = async (req) => JSON.parse((await text(req)) || '{}');

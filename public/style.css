@@ -336,6 +336,7 @@ header { align-items: center; }
 .cform .trow { display: flex; align-items: center; gap: 10px; margin: 0 14px; color: var(--muted); }
 .cform .trow input { flex: 1; min-width: 0; box-shadow: none; }
 .cform .btnrow { margin: 16px 14px 0; }
+.cform .note { display: block; padding: 10px 14px 0; color: var(--muted); font-size: 13px; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .lastbus { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .lastbus .ic { width: 13px; height: 13px; }

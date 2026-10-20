@@ -5,6 +5,7 @@
 // A fifth, {alerts: true, routes, stopIds}, pushes each new service alert that names one of those routes or stops (once per alert).
 // A fourth, {ride: true, tripId, alightStopId, alightIdx, ...}, rides along with one bus: "your stop is next" when it nears the stop you get off at.
 // With {next: {tripId, boardStopId, boardIdx, walkSecs, route}, to, alightAt} it also warns, once, if you will miss the connection, and re-plans.
+// Quiet hours (one setting, not a watch) silence standing stop watches and service alerts; ride, commute and one-off bells always go through.
 const fs = require('fs');
 const path = require('path');
 const webpush = require('web-push');
@@ -18,6 +19,16 @@ const save = (f, v) => { fs.mkdirSync(DIR, { recursive: true }); fs.writeFileSyn
 // Browsers only hand out subscriptions on their vendor's push service. Anything else would make the server POST to an address of the caller's choosing.
 const PUSH_HOSTS = ['googleapis.com', 'mozilla.com', 'push.apple.com', 'notify.windows.com'];
 const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+// Local clock in Saskatoon: minute of the day and weekday (0 = Sunday). Shared by commutes and quiet hours.
+const localTime = (now, tz) => { const d = new Date((now + tz) * 1000); return { min: d.getUTCHours() * 60 + d.getUTCMinutes(), day: d.getUTCDay() }; };
+// Is this moment inside the quiet window? A window that crosses midnight belongs to the day it starts on. Malformed or off means not quiet; never throws.
+const quietAt = (q, now, tz) => {
+  if (!q || !q.on || !Array.isArray(q.days) || !q.days.length || !q.days.every((d) => int(d, 0, 6))) return false;
+  if (!int(q.startMin, 0, 1439) || !int(q.endMin, 0, 1439) || q.startMin === q.endMin) return false;
+  const { min, day } = localTime(now, tz);
+  if (q.startMin < q.endMin) return q.days.includes(day) && min >= q.startMin && min < q.endMin;
+  return (q.days.includes(day) && min >= q.startMin) || (q.days.includes((day + 6) % 7) && min < q.endMin);
+};
 const point = (p) => !!p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
 
 // A reason this watch request is unacceptable, or null. Checked by the server before watch().
@@ -45,7 +56,7 @@ function invalid(w) {
   return null;
 }
 
-module.exports = function createPush({ arrivals, alerts = async () => [], progress = async () => null, plan = async () => [], weather = async () => null, tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
+module.exports = function createPush({ arrivals, alerts = async () => [], progress = async () => null, plan = async () => [], weather = async () => null, tzOffsetSec = -6 * 3600, checkEveryMs = 20000, quiet = () => null }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
@@ -80,7 +91,7 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
   // Alerts watch: push each active alert naming one of the watch's routes or stops, once. Alerts can stay up for days, so an id is
   // remembered while the alert is active (not for 6 h). The first pass, and any change of routes/stops, only records what is already
   // active so old alerts are not announced. Returns false if the watch should be dropped.
-  async function pingAlerts(w, list, now) {
+  async function pingAlerts(w, list, now, hush) {
     const sig = [...w.routes, '|', ...w.stopIds].join(), live = new Set(list.map((a) => a.id)), prime = w.sig !== sig;
     w.sent ||= {}; w.sig = sig;
     // an empty list is what a never-downloaded feed looks like (e.g. a restart during a city outage): forgetting then would re-announce everything
@@ -89,6 +100,7 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
       if (w.sent[a.id]) continue;
       const route = (a.routes || []).find((r) => w.routes.includes(r)), stop = (a.stops || []).find((s) => w.stopIds.includes(s));
       if (!prime && !route && !stop) continue;
+      if (!prime && hush) continue; // deferred, not dropped: not marked sent, so it goes out after quiet hours if still active
       w.sent[a.id] = now;
       if (!prime && await send(w, { title: route ? `Alert: Route ${route}` : 'Alert: stop', body: a.header || 'Service alert' })) return false;
     }
@@ -97,8 +109,8 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
 
   // Commute: while its window is open, plan the trip about once a minute and send one "leave in N min" per bus. Returns false if the watch should be dropped.
   async function pingCommute(w, now) {
-    const local = new Date((now + tzOffsetSec) * 1000), min = local.getUTCHours() * 60 + local.getUTCMinutes();
-    if (!w.days.includes(local.getUTCDay()) || min < w.startMin || min > w.endMin || now - (w.checkedAt || 0) < 60) return true;
+    const { min, day } = localTime(now, tzOffsetSec);
+    if (!w.days.includes(day) || min < w.startMin || min > w.endMin || now - (w.checkedAt || 0) < 60) return true;
     w.checkedAt = now;
     const opts = await plan(w.from, w.to).catch(() => null);
     const o = opts && opts[0], ride = o && o.legs.find((l) => l.type === 'ride');
@@ -142,17 +154,19 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
 
   async function check() {
     const now = Date.now() / 1000;
-    const stopIds = [...new Set(watches.filter((w) => !w.commute && !w.ride && !w.alerts).map((w) => w.stopId))];
+    let hush = false; try { hush = quietAt(quiet(), now, tzOffsetSec); } catch {} // a broken setting never silences anything
+    const stopIds = [...new Set(watches.filter((w) => !w.commute && !w.ride && !w.alerts && !(hush && w.standing)).map((w) => w.stopId))];
     const arr = Object.fromEntries(await Promise.all(stopIds.map(async (s) => [s, await arrivals(s).catch(() => null)])));
     // Sends are slow, and watch()/unwatch() can run while we wait on them, so only remove the watches this pass finished with;
     // replacing the whole list would throw away anything added in the meantime.
     const drop = new Set();
     const al = watches.some((w) => w.alerts) ? await alerts().catch(() => null) : null; // one fetch shared by every alerts watch
     for (const w of [...watches]) {
-      if (w.alerts) { if (al && !(await pingAlerts(w, al, now))) drop.add(w); continue; }
+      if (w.alerts) { if (al && !(await pingAlerts(w, al, now, hush))) drop.add(w); continue; }
       if (w.commute) { if (!(await pingCommute(w, now))) drop.add(w); continue; }
       if (w.ride) { if (!(await pingRide(w, now))) drop.add(w); continue; }
-      if (w.standing) { if (arr[w.stopId] && !(await pingStop(w, arr[w.stopId], now))) drop.add(w); continue; }
+      // quiet hours skip standing watches without marking buses sent: dropped, not deferred (a bus that passed in the night is stale news)
+      if (w.standing) { if (!hush && arr[w.stopId] && !(await pingStop(w, arr[w.stopId], now))) drop.add(w); continue; }
       const hit = (arr[w.stopId] || []).find((a) => a.trip === w.tripId);
       if (!arr[w.stopId]) continue; // feed hiccup: try again next tick
       if (!hit) { if (!w.missing) w.missing = now; if (now - w.missing >= 300) drop.add(w); continue; } // trip left the feed: give up after 5 min
@@ -187,3 +201,4 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
     check,
   };
 };
+module.exports.quietAt = quietAt; // for tests

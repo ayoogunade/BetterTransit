@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts', 'quietHours'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -768,6 +768,8 @@ function tripCard(r, i) {
 // A saved trip that pushes "leave in N min" while its time window is open. Synced like pins; each device registers its own push watch.
 let commutes = store.get('commutes', []); // {id, name, from: {lat, lon, name}, to: {lat, lon, name}, days: [0-6], startMin, endMin, minutes, off}
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const daySeg = (days) => `<div class="seg wide" role="group" aria-label="Days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button data-day="${d}" class="${days.includes(d) ? 'on' : ''}" aria-pressed="${days.includes(d)}">${DAYS[d]}</button>`).join('')}</div>`;
+const toggleDay = (days, d) => days.includes(d) ? days.filter((x) => x !== d) : [...days, d];
 const minText = (m) => new Date(2000, 0, 1, 0, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const fromHhmm = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
@@ -803,7 +805,7 @@ function openCommuteSheet() {
       <div class="sheet-list cform">
         <label class="alabel" for="cname">Name</label><input id="cname" type="text" value="${esc(c.name)}" maxlength="40" autocomplete="off">
         <div class="alabel">Days</div>
-        <div class="seg wide" role="group" aria-label="Days">${[1, 2, 3, 4, 5, 6, 0].map((d) => `<button data-day="${d}" class="${c.days.includes(d) ? 'on' : ''}" aria-pressed="${c.days.includes(d)}">${DAYS[d]}</button>`).join('')}</div>
+        ${daySeg(c.days)}
         <div class="alabel">Alert me between</div>
         <div class="trow"><input id="cstart" type="time" value="${hhmm(c.startMin)}" aria-label="From"><span>and</span><input id="cend" type="time" value="${hhmm(c.endMin)}" aria-label="Until"></div>
         <div class="alabel">Tell me before I need to leave</div>
@@ -818,7 +820,7 @@ function openCommuteSheet() {
   el.onclick = async (e) => {
     if (e.target.closest('[data-close]')) return close();
     const day = e.target.closest('[data-day]'), m = e.target.closest('[data-mins]');
-    if (day) { const d = +day.dataset.day; c.days = c.days.includes(d) ? c.days.filter((x) => x !== d) : [...c.days, d]; return draw(); }
+    if (day) { c.days = toggleDay(c.days, +day.dataset.day); return draw(); }
     if (m) { c.minutes = +m.dataset.mins; return draw(); }
     if (!e.target.closest('[data-save]')) return;
     if (!c.days.length) return toast('Pick at least one day');
@@ -1036,12 +1038,48 @@ async function loadAlerts() {
   $('#alert-badge').textContent = n || '';
   $('[data-tab=alerts]').setAttribute('aria-label', n ? `Alerts, ${n} new on your routes` : 'Alerts');
 }
+// Quiet hours: one window on every device. Inside it, stop and service-alert pushes wait (or are dropped); rides, commutes and one-off bells still come through.
+const loadQuiet = () => store.get('quietHours', null) || { on: false, startMin: 1320, endMin: 420, days: [0, 1, 2, 3, 4, 5, 6] }; // default 10 PM to 7 AM
+let quietHours = loadQuiet();
+const quietRow = () => `<div class="sg" role="button" tabindex="0" data-quiet><span class="ico">${icon('moon')}</span><span class="t"><b>Quiet hours</b><small>${quietHours.on ? `${minText(quietHours.startMin)}–${minText(quietHours.endMin)} · ${daysText(quietHours.days)}` : 'Off'}</small></span><span class="switch ${quietHours.on ? 'on' : ''}"></span></div>`;
+// Edits a copy, so Cancel discards it. The switch is visual only: the whole row opens this sheet.
+function openQuietSheet() {
+  const q = { ...quietHours, days: [...quietHours.days] };
+  const { el, close } = sheetShell('', { mini: true });
+  const draw = () => {
+    el.innerHTML = `<div class="sheet-bar"><div><b>Quiet hours</b><small>No stop or service alerts during these hours</small></div><button data-close class="done">Cancel</button></div>
+      <div class="sheet-list cform">
+        <div class="sg" role="switch" tabindex="0" aria-checked="${q.on}" data-qon><span class="ico">${icon('moon')}</span><span class="t"><b>Quiet hours on</b></span><span class="switch ${q.on ? 'on' : ''}"></span></div>
+        <div class="alabel">Days</div>
+        ${daySeg(q.days)}
+        <div class="alabel">Quiet between</div>
+        <div class="trow"><input id="qstart" type="time" value="${hhmm(q.startMin)}" aria-label="From"><span>and</span><input id="qend" type="time" value="${hhmm(q.endMin)}" aria-label="Until"></div>
+        <small class="note">Your bus, rides and commutes still notify you.</small>
+        <div class="btnrow"><button class="btn primary" data-save>${icon('moon')} Save</button></div>
+      </div>`;
+    el.querySelector('#qstart').onchange = (e) => { if (e.target.value) q.startMin = fromHhmm(e.target.value); };
+    el.querySelector('#qend').onchange = (e) => { if (e.target.value) q.endMin = fromHhmm(e.target.value); };
+  };
+  draw();
+  el.onclick = (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    if (e.target.closest('[data-qon]')) { q.on = !q.on; return draw(); }
+    const day = e.target.closest('[data-day]');
+    if (day) { q.days = toggleDay(q.days, +day.dataset.day); return draw(); }
+    if (!e.target.closest('[data-save]')) return;
+    if (q.on && !q.days.length) return toast('Pick at least one day');
+    if (q.on && q.startMin === q.endMin) return toast("Start and end can't be the same");
+    quietHours = q; store.set('quietHours', q); close(); refreshAlerts();
+    toast(q.on ? `Quiet ${minText(q.startMin)}–${minText(q.endMin)}` : 'Quiet hours off');
+  };
+}
+
 async function refreshAlerts() {
   await loadAlerts();
   if (!alertList) return ($('#alerts').innerHTML = '<div class="empty">Alerts need a connection.</div>');
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
-  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div></div>`;
+  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}</div>`;
   $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => `<div class="card alert" role="button" tabindex="0" aria-expanded="false">
     <h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${seenAlerts.has(alertKey(x)) ? '' : '<span class="chip new">New</span>'}${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
     <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
@@ -1053,6 +1091,7 @@ async function refreshAlerts() {
 $('#alerts').onclick = (e) => {
   if (e.target.closest('[data-editroutes]')) return openRoutesSheet();
   if (e.target.closest('[data-routealerts]')) return toggleRouteAlerts();
+  if (e.target.closest('[data-quiet]')) return openQuietSheet();
   const c = e.target.closest('.alert');
   if (c) c.setAttribute('aria-expanded', c.classList.toggle('open'));
 };
@@ -1081,6 +1120,7 @@ function applySynced() {
   pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {}); commutes = store.get('commutes', []);
   accessible = store.get('accessible', false); showAccessible(); shown = store.get('shownRoutes', null); stopAlerts = store.get('stopAlerts', {}); stopSort = store.get('stopSort', 'mine');
   seenAlerts = new Set(store.get('seenAlerts', [])); loadAlerts(); routeAlerts = store.get('routeAlerts', false); syncRouteAlerts();
+  quietHours = loadQuiet(); if (!$('#alerts').hidden) refreshAlerts();
   renderPlaces(); renderCommutes(); syncCommutes(); applyRouteFilter();
 }
 $('#updated').onclick = () => { $('#updated').textContent = 'Refreshing…'; refreshAll(); };

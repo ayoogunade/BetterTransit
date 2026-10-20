@@ -414,3 +414,91 @@ test('an empty alert list (feed never downloaded) does not make an alerts watch 
   list = [{ id: 'a1', routes: ['60'], stops: [], header: 'Detour' }]; await push.check();
   assert.strictEqual(sent.length, 0);
 });
+
+// ---------- quiet hours (one window, Saskatoon wall-clock minutes; 2026-10-16 is a Friday) ----------
+const { quietAt } = createPush;
+const at = (d, h, m) => Date.UTC(2026, 9, d, h, m) / 1000 + 6 * 3600;
+const TZ = -6 * 3600;
+const win = (extra = {}) => ({ on: true, startMin: 540, endMin: 720, days: [1, 2, 3, 4, 5], ...extra });
+
+test('quietAt: a same-day window is quiet from its start up to but not including its end, on its days', () => {
+  const q = win();
+  assert.strictEqual(quietAt(q, at(16, 9, 0), TZ), true); // start inclusive
+  assert.strictEqual(quietAt(q, at(16, 11, 59), TZ), true);
+  assert.strictEqual(quietAt(q, at(16, 12, 0), TZ), false); // end exclusive
+  assert.strictEqual(quietAt(q, at(16, 8, 59), TZ), false);
+  assert.strictEqual(quietAt(q, at(17, 10, 0), TZ), false); // Saturday is not in days
+});
+
+test('quietAt: a window that crosses midnight belongs to the day it starts on', () => {
+  const q = win({ startMin: 1380, endMin: 420, days: [5] }); // Fri 23:00 to 07:00
+  assert.strictEqual(quietAt(q, at(16, 23, 30), TZ), true); // Fri 23:30
+  assert.strictEqual(quietAt(q, at(17, 6, 59), TZ), true); // Sat 06:59 is still Friday's window
+  assert.strictEqual(quietAt(q, at(17, 7, 0), TZ), false);
+  assert.strictEqual(quietAt(q, at(16, 22, 59), TZ), false);
+  assert.strictEqual(quietAt(q, at(15, 23, 30), TZ), false); // Thu
+  assert.strictEqual(quietAt(q, at(17, 23, 30), TZ), false); // Sat night: Sat is not in days
+});
+
+test('quietAt: off, equal start and end, and malformed settings are never quiet, and never throw', () => {
+  const t = at(16, 10, 0); // inside the window if it were valid
+  assert.strictEqual(quietAt(win(), t, TZ), true);
+  assert.strictEqual(quietAt(win({ on: false }), t, TZ), false);
+  assert.strictEqual(quietAt(win({ startMin: 600, endMin: 600 }), t, TZ), false);
+  for (const bad of [null, undefined, {}, 'x', win({ days: 5 }), win({ days: [] }), win({ days: [1, 9] }), win({ startMin: 2000 }), win({ endMin: '600' }), win({ startMin: 1.5 })]) assert.strictEqual(quietAt(bad, t, TZ), false);
+});
+
+// a window that covers the current minute, so the check() tests do not depend on the clock
+const localMin = () => { const d = new Date(Date.now() - 6 * 3600e3); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
+const quietNow = () => { const m = localMin(); return { on: true, startMin: (m + 1435) % 1440, endMin: (m + 5) % 1440, days: [0, 1, 2, 3, 4, 5, 6] }; };
+
+test('quiet hours: a standing stop watch sends nothing while quiet, and the same bus notifies once quiet ends', async () => {
+  sent.length = 0;
+  let q = quietNow(), calls = 0;
+  const push = createPush({ arrivals: async () => { calls++; return [{ trip: 'Q', route: '60', time: now() + 200, live: true }]; }, quiet: () => q, checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'q1' }, stopId: 'SQ', standing: true, routes: null, minutes: 5, stopName: 'X' });
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+  assert.strictEqual(calls, 0); // its stop's arrivals are not even fetched
+  q = null; // quiet ends: the bus is still in the window, so it was never marked as sent
+  await push.check();
+  assert.strictEqual(sent.length, 1);
+});
+
+test('quiet hours: alerts prime as usual, a new match is held until quiet ends, and one that ends in quiet is never sent', async () => {
+  sent.length = 0;
+  let q = quietNow();
+  let list = [{ id: 'o1', routes: ['60'], stops: [], header: 'Old' }];
+  const push = createPush({ arrivals: async () => [], alerts: async () => list, quiet: () => q, checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'qa' }, alerts: true, routes: ['60'], stopIds: [], minutes: 1 });
+  await push.check(); // primes during quiet: 'Old' is recorded, not sent
+  list = [...list, { id: 'n1', routes: ['60'], stops: [], header: 'Held' }, { id: 'n2', routes: ['60'], stops: [], header: 'Gone by morning' }];
+  await push.check();
+  assert.strictEqual(sent.length, 0);
+  list = list.filter((a) => a.id !== 'n2'); // n2 ends during the night
+  q = null;
+  await push.check();
+  assert.deepStrictEqual(sent.map((s) => s.body), ['Held']);
+  await push.check();
+  assert.strictEqual(sent.length, 1); // once
+});
+
+test('quiet hours: one-off bus bells, commutes and ride watches still send', async () => {
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [{ trip: 'T', route: '17', time: now() + 200, live: true }], plan: async () => option(now() + 200), progress: async () => prog(9), quiet: () => quietNow(), checkEveryMs: 1e9 });
+  push.watch(w());
+  push.watch(commute({ commuteId: 'qc' }));
+  push.watch(ride());
+  await push.check();
+  assert.deepStrictEqual(sent.map((s) => s.title).sort(), ['Leave in 3 min for To Work', 'Route 17 in 3 min', 'Your stop is next']);
+});
+
+test('quiet hours: a quiet() getter that throws or returns junk never stops notifications', async () => {
+  for (const quiet of [() => { throw new Error('db'); }, () => ({ on: true, startMin: 'x', endMin: 0, days: 'all' }), () => 'junk']) {
+    sent.length = 0;
+    const push = createPush({ arrivals: async () => [{ trip: 'T', route: '17', time: now() + 200, live: true }], quiet, checkEveryMs: 1e9 });
+    push.watch(w());
+    await push.check();
+    assert.strictEqual(sent.length, 1);
+  }
+});

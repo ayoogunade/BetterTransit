@@ -5,7 +5,7 @@ const path = require('path');
 
 const DIR = path.join(__dirname, 'data');
 const FILE = path.join(DIR, 'sync.json');
-const KEYS = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts'];
+const KEYS = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts', 'quietHours'];
 
 module.exports = function createSync(file = FILE) {
   let state = {};
@@ -21,6 +21,8 @@ module.exports = function createSync(file = FILE) {
       if (changed) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(state)); }
       return state;
     },
+    // current value of one key (undefined if never set): the server reads settings this way
+    get: (k) => state[k]?.v,
     KEYS,
   };
 };
