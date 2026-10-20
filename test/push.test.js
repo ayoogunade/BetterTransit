@@ -388,3 +388,14 @@ test('alerts watch: changing routes re-primes instead of announcing old alerts',
   await push.check();
   assert.strictEqual(sent.length, 0);
 });
+
+test('an empty alert list (feed never downloaded) does not make an alerts watch forget, so nothing is re-announced', async () => {
+  sent.length = 0;
+  let list = [{ id: 'a1', routes: ['60'], stops: [], header: 'Detour' }];
+  const push = createPush({ arrivals: async () => [], alerts: async () => list, checkEveryMs: 1e9 });
+  push.watch({ sub: { endpoint: 'al' }, alerts: true, routes: ['60'], stopIds: [], minutes: 1 });
+  await push.check(); // primes: a1 is already active, not announced
+  list = []; await push.check();
+  list = [{ id: 'a1', routes: ['60'], stops: [], header: 'Detour' }]; await push.check();
+  assert.strictEqual(sent.length, 0);
+});

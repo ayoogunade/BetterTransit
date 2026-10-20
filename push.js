@@ -83,7 +83,8 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
   async function pingAlerts(w, list, now) {
     const sig = [...w.routes, '|', ...w.stopIds].join(), live = new Set(list.map((a) => a.id)), prime = w.sig !== sig;
     w.sent ||= {}; w.sig = sig;
-    for (const id of Object.keys(w.sent)) if (!live.has(id)) delete w.sent[id];
+    // an empty list is what a never-downloaded feed looks like (e.g. a restart during a city outage): forgetting then would re-announce everything
+    if (list.length) for (const id of Object.keys(w.sent)) if (!live.has(id)) delete w.sent[id];
     for (const a of list) {
       if (w.sent[a.id]) continue;
       const route = (a.routes || []).find((r) => w.routes.includes(r)), stop = (a.stops || []).find((s) => w.stopIds.includes(s));
