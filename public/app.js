@@ -651,12 +651,12 @@ async function planTrip() {
   if (!place.from || !place.to) return;
   $('#trip').innerHTML = '<div class="empty">Planning…</div>';
   const t = $('#when').value ? Math.floor(new Date($('#when').value).getTime() / 1000) : 0;
-  let r;
-  try { r = await api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`); }
+  let r, wx;
+  try { [r, wx] = await Promise.all([api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`), api('/api/weather').catch(() => null)]); }
   catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
   if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
   trips = r;
-  $('#trip').innerHTML = r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
+  $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°C feels like ${wx.feels}°C · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
 }
 let trips = [];
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
@@ -664,6 +664,12 @@ const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
 const rideWatch = (l, nl, walkMins) => ({ ride: true, tripId: l.trip, alightStopId: l.alight.id, alightIdx: l.alight.idx, stopName: l.alight.name, route: l.route, headsign: l.headsign, minutes: 1,
   ...(nl && { next: { tripId: nl.trip, boardStopId: nl.board.id, boardIdx: nl.boardIdx, walkSecs: walkMins * 60, route: nl.route, stopName: nl.board.name }, to: { lat: place.to.lat, lon: place.to.lon }, alightAt: { lat: l.alight.lat, lon: l.alight.lon } }) });
 const rideLabel = (l) => (watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? `${icon('bell-ring')} Stop alert on` : `${icon('bus')} I'm on this bus`);
+// the native share sheet when there is one, else copy the link
+async function shareLink(url) {
+  if (navigator.share) return void (await navigator.share({ title: 'My arrival', url }).catch(() => {}));
+  await navigator.clipboard.writeText(url);
+  toast('Link copied');
+}
 const tripPinLabel = (l) => `${icon('pin')} ${isStopPinned(l.board) ? 'Stop pinned' : 'Pin this stop'}`;
 $('#trip').onclick = async (e) => {
   const b = e.target.closest('button');
@@ -674,6 +680,12 @@ $('#trip').onclick = async (e) => {
     await toggleWatch(rideWatch(l, ni < 0 ? null : after[ni], after.slice(0, Math.max(ni, 0)).reduce((n, x) => n + x.mins, 0)));
     b.classList.toggle('on', watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })));
     return void (b.innerHTML = rideLabel(l));
+  }
+  if (b?.dataset.share) {
+    const [o, j] = b.dataset.share.split(':').map(Number), l = trips[o].legs[j];
+    try { const { url } = await post('/api/share', { tripId: l.trip, alightIdx: l.alight.idx, toName: l.alight.name }).then((r) => r.json()); await shareLink(url); }
+    catch { toast('Could not share'); }
+    return;
   }
   if (b?.dataset.twatch) {
     const l = firstRide(+b.dataset.twatch);
@@ -693,7 +705,7 @@ function tripCard(r, i) {
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
     : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
         <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small>
-          ${l.alight ? `<button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button>` : ''}</div>
+          ${l.alight ? `<button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button>` : ''}</div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
   const first = rides[0], act = first && first.trip ? `<div class="btnrow"><button class="btn ${isStopPinned(first.board) ? 'on' : ''}" data-tpin="${i}">${tripPinLabel(first)}</button>

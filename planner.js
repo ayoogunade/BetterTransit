@@ -170,5 +170,23 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
     for (let i = 0; i + 1 < out.length; i++) if (risky(out[i]) && !risky(out[i + 1]) && Math.abs(out[i].arrive - out[i + 1].arrive) <= 300) [out[i], out[i + 1]] = [out[i + 1], out[i]];
     return out;
   };
+  // Seconds spent outside in one mapped option (server.js shape): walking, including the last stretch, plus waiting at stops between rides.
+  plan.outside = (o) => {
+    let secs = (o.finalWalkMins || 0) * 60, prev = null, walked = 0;
+    for (const l of o.legs) {
+      if (l.type === 'walk') { secs += l.mins * 60; walked += l.mins * 60; continue; }
+      if (prev) secs += Math.max(0, l.dep - prev.arr - walked);
+      prev = l; walked = 0;
+    }
+    return secs;
+  };
+  // In deep cold: of the options arriving within 5 minutes of the earliest, the one with the least time outside goes first (ties keep
+  // their order; the rest stay as they were). Runs before preferSafe, which may still swap a risky first pick for a safe neighbour.
+  plan.preferWarm = (opts, cold) => {
+    if (!cold || opts.length < 2) return opts;
+    const best = Math.min(...opts.map((o) => o.arrive));
+    const warm = opts.filter((o) => o.arrive - best <= 300).reduce((a, o) => (plan.outside(o) < plan.outside(a) ? o : a));
+    return [warm, ...opts.filter((o) => o !== warm)];
+  };
   return plan;
 };

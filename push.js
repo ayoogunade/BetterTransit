@@ -41,7 +41,7 @@ function invalid(w) {
   return null;
 }
 
-module.exports = function createPush({ arrivals, progress = async () => null, plan = async () => [], tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
+module.exports = function createPush({ arrivals, progress = async () => null, plan = async () => [], weather = async () => null, tzOffsetSec = -6 * 3600, checkEveryMs = 20000 }) {
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
@@ -83,8 +83,8 @@ module.exports = function createPush({ arrivals, progress = async () => null, pl
     prune(w, now);
     if (!ride || w.sent[ride.trip] || o.leave - now > w.minutes * 60) return true;
     w.sent[ride.trip] = now;
-    const mins = Math.max(0, Math.round((o.leave - now) / 60));
-    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}${ride.last ? ' · last bus' : ''}` }));
+    const mins = Math.max(0, Math.round((o.leave - now) / 60)), wx = await weather().catch(() => null);
+    return !(await send(w, { title: `${mins <= 0 ? 'Leave now' : `Leave in ${mins} min`} for ${w.name || 'your commute'}`, body: `Route ${ride.route} ${ride.headsign || ''} from ${ride.board.name} at ${clock(ride.dep)} · arrive ${clock(o.arrive)}${ride.live ? '' : ' (scheduled)'}${ride.last ? ' · last bus' : ''}${wx && wx.cold ? ` · feels like ${wx.feels}°C` : ''}` }));
   }
 
   // Ride watch: "your stop is next" once the bus is at the stop before yours. Returns false if the watch should be dropped.

@@ -340,3 +340,6 @@ header { align-items: center; }
 .lastbus { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; font-weight: 700; }
 .lastbus .ic { width: 13px; height: 13px; }
 .rbtn { flex: none; padding: 6px 10px; font-size: 13px; margin-left: auto; }
+.rbtn + .rbtn { margin-left: 0; }
+.wx { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; padding: 0 2px 8px; }
+.wx .ic { width: 16px; height: 16px; flex: none; }

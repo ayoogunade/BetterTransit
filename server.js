@@ -376,7 +376,8 @@ async function planTrip(from, to, departAt, arriveBy = 0, accessible = false) {
   const opts = arriveBy ? plan.arriveBy(from, to, arriveBy - localMidnight, services, live, when - localMidnight, undefined, accessible) : plan.options(from, to, when - localMidnight, services, live, undefined, undefined, accessible);
   const weekend = [0, 6].includes(new Date((when + TZ_OFFSET_SEC) * 1000).getUTCDay());
   const routeOf = (tid) => (routes[trips[tid].route_id] || {}).route_short_name;
-  return plan.preferSafe(opts.map((r) => {
+  const cold = ((await weather()) || {}).cold; // deep cold: among near-equal options, least time outside first, then the safe-transfer swap
+  return plan.preferSafe(plan.preferWarm(opts.map((r) => {
     const x = plan.transfers(r.legs, { route: routeOf, usual: (rt, stop, hour) => history.usual(rt, stop, weekend, hour) }); // per leg: stayOn / risk
     return {
     leave: abs(r.leave),
@@ -391,7 +392,17 @@ async function planTrip(from, to, departAt, arriveBy = 0, accessible = false) {
         ...(lastTrips(b.stop_id, services, day).get(tripKey(t)) === l.trip && { last: true }), ...x[i] };
     }),
     finalWalkMins: Math.round(r.finalWalk / 60),
-  }; }));
+  }; }), cold));
+}
+
+// What a shared-arrival page may see, and nothing more: the ride's route, where it ends up, when, and the bus's position.
+// arrive/expiresAt are epoch seconds; left: stops from the next one through the destination (null: no predictions, 0: trip finished).
+async function sharedArrival(link) {
+  const t = await tripTimeline(link.tripId), st = t && t.stops[link.alightIdx];
+  if (!st) return null;
+  const [p, buses] = await Promise.all([rideProgress(link.tripId), vehicles([t.route])]), bus = buses.find((b) => b.trip === link.tripId);
+  return { route: t.route, color: t.color, headsign: t.headsign, to: link.to || st.name, arrive: st.time, live: t.live, cancelled: t.cancelled,
+    left: p && p.next === null ? 0 : p && p.next != null ? Math.max(1, link.alightIdx - p.next + 1) : null, bus: bus ? { lat: bus.lat, lon: bus.lon } : null, expiresAt: Math.floor(link.expiresAt / 1000) };
 }
 
 // ---------- http ----------
@@ -406,7 +417,9 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
 const search = require('./search')(() => ({ stops, routes, trips, tripStops }));
 const sync = require('./sync')();
 const history = require('./history')();
-const push = require('./push')({ arrivals: (id) => arrivals(id), progress: rideProgress, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
+const weather = require('./weather')();
+const shares = require('./share')();
+const push = require('./push')({ arrivals: (id) => arrivals(id), progress: rideProgress, weather, plan: (from, to, departAt) => planTrip(from, to, departAt || 0, 0), tzOffsetSec: TZ_OFFSET_SEC });
 const auth = require('./auth')();
 const text = (req) => new Promise((ok) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => ok(b)); });
 const body = async (req) => JSON.parse((await text(req)) || '{}');
@@ -436,6 +449,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, list.slice(0, 25).map((s) => ({ id: s.stop_id, name: s.stop_name, lat: +s.stop_lat, lon: +s.stop_lon })));
     }
     let m;
+    if (p === '/api/weather') return json(res, (await weather()) || null);
+    if (p === '/api/share' && req.method === 'POST') {
+      const { tripId, alightIdx, toName } = await body(req).catch(() => ({})), sts = tripStops[tripId];
+      if (!sts || !Number.isInteger(alightIdx) || alightIdx < 1 || alightIdx >= sts.length || (toName != null && typeof toName !== 'string')) return json(res, { error: 'bad share' }, 400);
+      const token = shares.create({ tripId, alightIdx, to: (toName || '').trim().slice(0, 80) });
+      return json(res, { url: `${req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http'}://${req.headers.host}/s/${token}` });
+    }
+    // public, no login (auth.js): the share page and the only data it may read (sharedArrival)
+    if ((m = p.match(/^\/(s|api\/shared)\/([^/]+)$/))) {
+      const link = shares.get(m[2]);
+      res.setHeader('cache-control', 'no-store'); res.setHeader('referrer-policy', 'no-referrer'); res.setHeader('x-robots-tag', 'noindex');
+      if (m[1] !== 's') { const d = link && (await sharedArrival(link)); return d ? json(res, d) : json(res, { error: 'expired' }, 404); }
+      res.writeHead(link ? 200 : 404, { 'content-type': 'text/html' });
+      return fs.createReadStream(path.join(__dirname, 'public', 'share.html')).pipe(res);
+    }
     if ((m = p.match(/^\/api\/arrivals\/(.+)$/))) return json(res, await arrivals(decodeURIComponent(m[1])));
     if (p === '/api/nearby') return json(res, await nearby(+u.searchParams.get('lat'), +u.searchParams.get('lon'), (u.searchParams.get('routes') || '').split(',').filter(Boolean)));
     if ((m = p.match(/^\/api\/trip\/(.+)$/))) { const t = await tripTimeline(decodeURIComponent(m[1])); return t ? json(res, t) : json(res, { error: 'not found' }, 404); }

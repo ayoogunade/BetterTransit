@@ -90,3 +90,13 @@ test('with auth off there are no sessions to list', () => {
   assert.deepStrictEqual(a.list(req()), []);
   assert.strictEqual(a.revoke('x'), false);
 });
+
+test('share links: exactly /s/<token> and /api/shared/<token> are public, nothing else', () => {
+  const a = createAuth({ hash, file: sessionFile() });
+  const tok = 'abcdefghijklmnopqrstuv'; // 22 chars
+  assert.strictEqual(a.check(req(), `/s/${tok}`), true);
+  assert.strictEqual(a.check(req(), `/api/shared/${tok}`), true);
+  for (const p of ['/s/', '/s', `/s/${tok}x`, '/s/short', `/s/${tok}/`, `/s/${tok}/extra`, `/api/shared/${tok}/x`, '/api/shared/', `/s/${tok}.json`, '/api/share', '/api/sync', '/api/arrivals/1', `/x/s/${tok}`, '/s/..%2fapi%2fsync', `/s/a b${tok}`]) assert.strictEqual(a.check(req(), p), false, p);
+  // the server checks the parsed pathname, in which dot segments are already resolved
+  for (const raw of ['/s/../api/sync', '/s/%2e%2e/api/sync', `/api/shared/${tok}/../../sync`, `/s/${tok}/../../api/sync`]) assert.strictEqual(a.check(req(), new URL(raw, 'http://x').pathname), false, raw);
+});
