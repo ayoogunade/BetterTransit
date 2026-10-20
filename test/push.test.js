@@ -136,6 +136,21 @@ test('a commute notifies when the leave time is inside the lead time, with the b
   assert.ok(push.has(commute({ commuteId: 'k2' }))); // and it keeps watching for tomorrow
 });
 
+test('a commute push adds the feels-like temperature only when it is cold, and survives the weather being down', async () => {
+  for (const [id, wx, tail] of [['w1', { feels: -35, cold: true }, / · feels like -35°C$/], ['w2', { feels: -5, cold: false }, /Confederation from Clarence at [^·]*· arrive [^·]*$/], ['w3', null, /arrive [^·]*$/]]) {
+    sent.length = 0;
+    const push = createPush({ arrivals: async () => [], plan: async () => option(now() + 200), weather: async () => wx, checkEveryMs: 1e9 });
+    push.watch(commute({ commuteId: id }));
+    await push.check();
+    assert.match(sent[0].body, tail);
+  }
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [], plan: async () => option(now() + 200), weather: async () => { throw new Error('x'); }, checkEveryMs: 1e9 });
+  push.watch(commute({ commuteId: 'w4' }));
+  await push.check();
+  assert.strictEqual(sent.length, 1);
+});
+
 test('a commute stays quiet outside its days and hours, and without a ride in the plan', async () => {
   sent.length = 0;
   let calls = 0;

@@ -139,3 +139,27 @@ test('preferSafe puts a non-risky option first when two arrive within 5 minutes'
   assert.deepStrictEqual(plan.preferSafe([d, e]), [d, e]); // 400 s apart: keep the order
   assert.deepStrictEqual(plan.preferSafe([e, d]), [e, d]);
 });
+
+// time outside = walking (incl. the final walk) + waiting at stops between rides
+const warmOpt = (arrive, walk, wait = 0) => ({ arrive, finalWalkMins: 0, legs: [{ type: 'walk', mins: walk }, { type: 'ride', dep: 0, arr: 1000 }, { type: 'ride', dep: 1000 + wait * 60, arr: 2000 }] });
+
+test('outside counts walks, the final walk and the wait between rides', () => {
+  assert.strictEqual(plan.outside({ finalWalkMins: 3, legs: [{ type: 'walk', mins: 5 }, { type: 'ride', dep: 0, arr: 600 }, { type: 'walk', mins: 2 }, { type: 'ride', dep: 1020, arr: 1500 }] }), (5 + 3 + 2) * 60 + 300); // 7 min between rides minus the 2 walked
+  assert.strictEqual(plan.outside({ finalWalkMins: 0, legs: [{ type: 'ride', dep: 0, arr: 600 }] }), 0);
+});
+
+test('preferWarm: when cold, the least-outside option within 5 min of the best goes first; otherwise nothing changes', () => {
+  const [a, b, c] = [warmOpt(1000, 10), warmOpt(1200, 2), warmOpt(1250, 0)];
+  assert.deepStrictEqual(plan.preferWarm([a, b, c], false), [a, b, c]);
+  assert.deepStrictEqual(plan.preferWarm([a, b, c], true), [c, a, b]); // c is 250 s after the best and has the least outside
+  const far = warmOpt(1400, 0); // 400 s after the best: not a candidate
+  assert.deepStrictEqual(plan.preferWarm([a, far], true), [a, far]);
+  assert.deepStrictEqual(plan.preferWarm([warmOpt(1000, 5, 6), warmOpt(1100, 5, 1)], true).map((o) => o.arrive), [1100, 1000]); // waiting counts
+});
+
+test('preferWarm keeps order on a tie and does not touch the input', () => {
+  const [a, b] = [warmOpt(1000, 4), warmOpt(1100, 4)], input = [a, b];
+  assert.deepStrictEqual(plan.preferWarm(input, true), [a, b]);
+  assert.deepStrictEqual(input, [a, b]);
+  assert.deepStrictEqual(plan.preferWarm([], true), []);
+});

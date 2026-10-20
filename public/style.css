@@ -363,3 +363,6 @@ header { align-items: center; }
 .ttgrid span { font-size: 13px; font-variant-numeric: tabular-nums; text-align: center; padding: 5px 0; border-radius: 6px; background: var(--bg); white-space: nowrap; }
 .ttgrid span.past { opacity: .4; }
 .ttgrid span.next { background: var(--accent); color: #fff; font-weight: 700; }
+.rbtn + .rbtn { margin-left: 0; }
+.wx { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; padding: 0 2px 8px; }
+.wx .ic { width: 16px; height: 16px; flex: none; }

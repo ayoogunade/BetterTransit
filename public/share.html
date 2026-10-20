@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>Arrival · Better Transit</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+  /* standalone and public: no app files, no login. Same palette as the app */
+  :root { color-scheme: light dark; --bg: #f5f6f8; --card: #fff; --fg: #14171a; --muted: #6b7280; --line: #e5e7eb; --accent: #0a7d3c; --bad: #dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0e0f11; --card: #1a1c1f; --fg: #eceef0; --muted: #9aa0a6; --line: #2a2d31; --accent: #34c26e; --bad: #f87171; } }
+  body { margin: 0; font: 16px/1.35 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); }
+  main { max-width: 420px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 10vh) 16px 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+  svg { width: 20px; height: 20px; vertical-align: -4px; flex: none; }
+  .on { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; }
+  .badge { display: inline-block; min-width: 28px; padding: 2px 7px; border-radius: 8px; color: #fff; background: #444; font-weight: 700; text-align: center; }
+  h1 { font-size: 22px; line-height: 1.25; margin: 14px 0 6px; }
+  .big { font-size: 34px; font-weight: 700; margin: 0; }
+  .sub { color: var(--muted); margin: 4px 0 0; font-size: 15px; }
+  .done .big { color: var(--accent); }
+  .warn { color: var(--bad); }
+  small { display: block; color: var(--muted); margin-top: 18px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="c" aria-live="polite"><p class="sub">Loading…</p></div>
+</main>
+<script>
+  // lucide icons, inline (bus, check, link-2-off)
+  const svg = (d) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const ICON = {
+    bus: svg('<path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/>'),
+    check: svg('<path d="M20 6 9 17l-5-5"/>'),
+    off: svg('<path d="M9 17H7A5 5 0 0 1 7 7"/><path d="M15 7h2a5 5 0 0 1 4 8"/><line x1="8" x2="12" y1="12" y2="12"/><line x1="2" x2="22" y1="2" y2="22"/>'),
+  };
+  const c = document.getElementById('c');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (x) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[x]));
+  const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: 'America/Regina' }); // Saskatoon time, wherever you are
+  const token = location.pathname.split('/').pop();
+  let data = null;
+
+  function draw() {
+    if (!data) return;
+    const mins = Math.round((data.arrive - Date.now() / 1000) / 60), color = /^[0-9a-f]{6}$/i.test(data.color) ? data.color : '444';
+    const head = `<div class="on"><span class="badge" style="background:#${color}">${esc(data.route)}</span> ${ICON.bus} ${esc(data.headsign)}</div>`;
+    if (data.cancelled) return void (c.innerHTML = `${head}<h1 class="warn">This trip was cancelled</h1><p class="sub">It will not reach ${esc(data.to)}.</p>`);
+    const arrived = mins <= 0 && (data.left === 0 || mins < -2);
+    const when = arrived ? 'Arrived' : mins <= 0 ? 'Arriving now' : `In ${mins} min`;
+    c.className = 'card' + (arrived ? ' done' : '');
+    c.innerHTML = `${head}<h1>On Route ${esc(data.route)} to ${esc(data.to)}</h1>
+      <p class="big">${arrived ? ICON.check + ' ' : ''}${when}</p>
+      <p class="sub">${arrived ? 'Got there at' : 'Arriving'} ${clock(data.arrive)}${data.live ? '' : ' (scheduled)'}${!arrived && data.left ? ` · ${data.left} stop${data.left === 1 ? '' : 's'} to go` : ''}</p>
+      <small>Shared with you. Updates every 30 seconds. This link expires at ${clock(data.expiresAt)}.</small>`;
+  }
+  async function load() {
+    try {
+      const r = await fetch('/api/shared/' + encodeURIComponent(token), { cache: 'no-store' });
+      if (r.status === 404) { c.className = 'card'; c.innerHTML = `<div class="on">${ICON.off} Better Transit</div><h1>This link has expired</h1><p class="sub">Share links stop working after 2 hours. Ask for a new one if you still need it.</p>`; clearInterval(timer); clearInterval(tick); return; }
+      if (!r.ok) throw new Error(r.status);
+      data = await r.json();
+      draw();
+    } catch { if (!data) c.innerHTML = '<p class="sub">Could not load. Retrying…</p>'; } // keep showing the last good data on a blip
+  }
+  const timer = setInterval(load, 30000), tick = setInterval(draw, 15000); // the countdown moves between fetches
+  load();
+</script>
+</body>
+</html>

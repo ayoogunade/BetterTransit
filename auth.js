@@ -15,7 +15,10 @@ const TOUCH_MS = 3600e3; // "last active" is only rewritten to disk this often
 // reachable signed out: the login page, and what iOS fetches without cookies when adding to the Home Screen
 const OPEN = new Set(['/login', '/sw.js', '/manifest.json', '/favicon.svg', '/icon-180.png', '/icon-192.png', '/icon-512.png', '/style.css']);
 
-const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+// A shared-arrival link and the data behind it: exactly one 22-char token segment, nothing after it (see share.js)
+const SHARED = /^\/(s|api\/shared)\/[A-Za-z0-9_-]{22}$/;
+
+const sha =(s) => crypto.createHash('sha256').update(s).digest('hex');
 const same = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 // "iPhone · Safari": enough to tell your own devices apart in the list
 const deviceLabel = (ua = '') => {
@@ -50,7 +53,7 @@ module.exports = function createAuth({ hash = process.env.LOGIN_HASH, file = FIL
     enabled: true,
     // true when this request may go through
     check(req, pathname) {
-      if (OPEN.has(pathname)) return true;
+      if (OPEN.has(pathname) || SHARED.test(pathname)) return true;
       const s = find(req), now = Date.now();
       if (s && now - s.lastSeen > TOUCH_MS) { s.lastSeen = now; save(); }
       return !!s;
