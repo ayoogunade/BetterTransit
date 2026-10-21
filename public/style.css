@@ -368,3 +368,4 @@ header { align-items: center; }
 .rbtns .rbtn { margin-left: 0; }
 .wx { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; padding: 0 2px 8px; }
 .wx .ic { width: 16px; height: 16px; flex: none; }
+.busno { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; } /* fleet number, quiet next to the status */

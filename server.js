@@ -164,7 +164,8 @@ async function arrivals(id) {
 }
 
 // What the realtime feeds say about every trip, rebuilt once per feed message:
-// tripId -> { cancelled, at: Map(stop index -> {time, skipped}), next: index of the first stop still ahead (null: trip finished), bus: a vehicle is on it }
+// tripId -> { cancelled, at: Map(stop index -> {time, skipped}), next: index of the first stop still ahead (null: trip finished), bus: a vehicle is on it,
+//   label: that vehicle's fleet number }
 // plus the blocks that have a bus out right now (blockId -> start time of the trip that bus is running).
 const stateCache = new WeakMap();
 async function realtimeState() {
@@ -189,7 +190,7 @@ async function realtimeState() {
   for (const e of vmsg.entity) {
     const id = e.vehicle && e.vehicle.trip && e.vehicle.trip.tripId, t = trips[id];
     if (!t) continue;
-    if (byTrip.has(id)) byTrip.get(id).bus = true;
+    if (byTrip.has(id)) Object.assign(byTrip.get(id), { bus: true, label: (e.vehicle.vehicle && e.vehicle.vehicle.label) || null });
     const start = tripStops[id][0].t;
     if (t.block_id && !(blocks.get(t.block_id) <= start)) blocks.set(t.block_id, start);
   }
@@ -213,7 +214,7 @@ async function rideProgress(tripId) {
 
 // Arrivals at one stop, each with how much to trust it:
 //   tracked: a bus is on this trip, or out on an earlier run of the same block (so it's coming); time is the prediction
-//   sched: timetable time, so delay = time - sched (positive = late, negative = early); stopsAway when the bus is on this trip
+//   sched: timetable time, so delay = time - sched (positive = late, negative = early); stopsAway and label (fleet number) when the bus is on this trip
 //   cancelled / skipped (detour) are listed so you know not to wait; gone: just passed this stop (shown briefly)
 //   stale: the feed dropped the trip, this is its last prediction; neither tracked nor stale = timetable only
 //   ends: this is the trip's last stop (drop-off only); continuesAs: {route, headsign} when the same bus carries on as another trip
@@ -244,7 +245,7 @@ async function arrivalsAt(stopId) {
       lastGood.set(key, { time: p.time, seen: Date.now(), tracked });
       // stops away only once the bus has actually started this trip (it may be waiting at the first stop)
       const started = s.bus && (s.next > 0 || (s.at.get(0) || {}).time <= now);
-      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }) });
+      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }), ...(s.label && { label: s.label }) });
       continue;
     }
     // the feed dropped the trip. Trips leave the feed when the bus reaches its last stop, so one that was due has arrived;
@@ -330,8 +331,9 @@ async function tripTimeline(tripId) {
   const sts = tripStops[tripId], t = trips[tripId];
   if (!sts || !t) return null;
   const now = Math.floor(Date.now() / 1000), times = await liveTimes(), live = times.get(tripId), r = routes[t.route_id] || {};
+  const rt = (await realtimeState()).byTrip.get(tripId);
   return {
-    trip: tripId, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
+    trip: tripId, label: (rt && rt.label) || null, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
     stops: sts.map((st, i) => { const s = stopOf(st.stop); return { id: st.stop, name: s.stop_name, lat: +s.stop_lat || null, lon: +s.stop_lon || null, time: realTime(live ? live[i] : st.t, now) }; }), // lat/lon: "Show on map" draws the ride through them
   };
 }

@@ -231,7 +231,7 @@ async function openTripSheet(tripId, stopId) {
   const next = t.stops.findIndex((x) => x.time > now - 30), first = next < 0 ? t.stops.length - 1 : next, base = t.stops[first].time;
   const rows = t.stops.map((x, i) => `<div class="sg ${i < first ? 'past' : ''} ${x.id === stopId ? 'here' : ''}" ${i === first ? 'data-first' : ''}><span class="t"><b>${esc(x.name)}</b></span>
     <span class="when"><b>${clock(x.time)}</b>${i < first ? '' : `<small>+${Math.round((x.time - base) / 60)} min</small>`}</span></div>`).join('');
-  el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times'} · from next stop</small></div><button data-close class="done">Done</button></div>
+  el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times'}${t.label ? ` · ${busNo(t.label)}` : ''} · from next stop</small></div><button data-close class="done">Done</button></div>
     <div class="sheet-list">${rows}</div>`;
   const list = el.querySelector('.sheet-list'), row = list.querySelector('[data-first]');
   if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
@@ -342,6 +342,7 @@ const usualText = (a) => {
   const u = a.usual;
   return !u ? '' : u.late >= 30 ? `late ${u.late}% of the time here` : Math.abs(u.avg) < 1 ? 'usually on time' : u.avg > 0 ? `usually ${u.avg} min late` : `usually ${-u.avg} min early`;
 };
+const busNo = (label) => `<span class="busno">Bus #${esc(label)}</span>`; // the bus's fleet number, kept quiet
 const lastBus = `<span class="lastbus">${icon('moon')} Last bus</span>`; // the last scheduled trip of the day on this route and direction
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
@@ -351,7 +352,7 @@ function statusOf(a) {
   const ends = a.ends ? (a.continuesAs ? contText(a.continuesAs) : 'Drop-off only') : '';
   if (!a.tracked) return [ends, 'Not tracked yet', usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
-  return [ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
+  return [a.label ? busNo(a.label) : '', ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : '', a.last ? lastBus : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
 }
 const arrivalEta = (a) => (!isComing(a)
@@ -404,7 +405,7 @@ function routeCard(r, buses) {
       return `
     <div class="row ${i ? '' : 'first'}" role="button" tabindex="0" data-open="${esc(b.trip)}">
       <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing}deg)">${icon('navigation-2')}</span>
-      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}</span>
+      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}${b.label ? `<small>${busNo(b.label)}</small>` : ''}</span>
       ${b.next ? etaHtml(b.next.time, age) : `<span class="eta">${age}</span>`}
     </div>`;
     }).join('')).join('') : '<div class="empty">No buses in service right now</div>';
