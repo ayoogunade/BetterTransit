@@ -431,8 +431,108 @@ function timetableFor(stopId, dateStr) {
   return { groups: timetable.build(stopId, activeServices(day), day.getTime() / 1000 - TZ_OFFSET_SEC) };
 }
 
+// ---------- chat tools ----------
+// What the "Ask" chat (chat.js) may read and offer. Everything goes out in Saskatoon clock time so the model never does time zone math.
+const clockAt = (t) => { const d = new Date((t + TZ_OFFSET_SEC) * 1000), h = d.getUTCHours(); return `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+const atLocal = (hhmm, date) => { // "17:30" (+ "2026-10-22", default today) -> epoch
+  const m = /^(\d{1,2}):(\d\d)$/.exec(hhmm || ''); if (!m) throw new Error('times must be HH:MM');
+  const day = date ? timetable.parseDate(date) : new Date(dayOf(Date.now() / 1000) + 'T00:00:00Z'); if (!day) throw new Error('dates must be YYYY-MM-DD');
+  return day.getTime() / 1000 - TZ_OFFSET_SEC + +m[1] * 3600 + +m[2] * 60;
+};
+const ptOf = (p) => { if (!p || !Number.isFinite(+p.lat) || !Number.isFinite(+p.lon)) throw new Error('places need lat and lon (use find_place)'); return { lat: +p.lat, lon: +p.lon, name: String(p.name || 'Dropped pin') }; };
+const optionText = (r) => {
+  const rides = r.legs.filter((l) => l.type === 'ride');
+  return {
+    leave: clockAt(r.leave), arrive: clockAt(r.arrive), minutes: Math.round((r.arrive - r.leave) / 60), transfers: Math.max(0, rides.length - 1),
+    walk_minutes: r.legs.filter((l) => l.type === 'walk').reduce((n, l) => n + l.mins, 0) + (r.finalWalkMins || 0),
+    steps: r.legs.map((l) => (l.type === 'walk' ? `Walk ${l.mins} min${l.to ? ` to ${l.to}` : ''}` : {
+      route: l.route, toward: l.headsign, board: l.from, board_stop_id: l.board.id, departs: clockAt(l.dep), get_off: l.to, arrives: clockAt(l.arr), stops: l.stops, trip_id: l.trip,
+      live: !!l.live, ...(l.last && { last_bus: true }), ...(l.stayOn && { stay_on_same_bus: true }), ...(l.risk && { tight_transfer: `the ${l.risk.route} is 3+ min late ${l.risk.late}% of the time here` }) })),
+  };
+};
+const planAction = (from, to, mode, time) => ({ type: 'plan', from, to, mode, time }); // "Show in Plan" button
+const chatTools = {
+  async find_place({ query }) {
+    const q = String(query || '').trim(), saved = sync.get('saved') || {};
+    const mine = Object.entries(saved).filter(([k, v]) => v && (q.toLowerCase().includes(k) || q.toLowerCase() === String(v.name).toLowerCase())).map(([k, v]) => ({ kind: `saved ${k}`, name: v.name, lat: v.lat, lon: v.lon }));
+    if (mine.length) return mine;
+    const hits = (await search.suggest(q, ['stop', 'dest', 'place'], null)).slice(0, 6);
+    return Promise.all(hits.map(async (h) => {
+      const ll = h.lat != null ? h : await search.placeLatLon(h.placeId).catch(() => null);
+      return ll && { kind: h.kind, name: h.name, detail: h.sub, lat: ll.lat, lon: ll.lon, ...(h.kind === 'stop' && { stop_id: h.id }) };
+    })).then((l) => (l.filter(Boolean).length ? l.filter(Boolean) : 'Nothing found'));
+  },
+  async plan_trip({ from, to, depart_time, arrive_by, date, accessible }) {
+    const a = ptOf(from), b = ptOf(to), dep = depart_time ? atLocal(depart_time, date) : 0, arr = arrive_by ? atLocal(arrive_by, date) : 0;
+    const opts = await planTrip(a, b, dep, arr, !!accessible);
+    return { result: opts.length ? opts.slice(0, 3).map(optionText) : 'No trip found', action: planAction(a, b, arr ? 'arrive' : dep ? 'depart' : 'now', arr || dep) };
+  },
+  async compare_departures({ from, to, window_start, window_end, date }) {
+    const a = ptOf(from), b = ptOf(to), start = Math.max(atLocal(window_start, date), Math.floor(Date.now() / 1000)), end = Math.min(atLocal(window_end, date), start + 3 * 3600);
+    if (end <= start) throw new Error('that window is over or empty');
+    const seen = new Map(), step = Math.max(600, Math.ceil((end - start) / 12 / 60) * 60);
+    for (let t = start; t <= end; t += step) {
+      for (const o of await planTrip(a, b, t)) {
+        const k = o.legs.map((l) => l.trip || l.mins).join('>');
+        if (o.leave >= start && o.leave <= end && !seen.has(k)) seen.set(k, o);
+      }
+    }
+    const list = [...seen.values()].sort((x, y) => x.leave - y.leave).slice(0, 12).map(optionText);
+    return { result: list.length ? list : 'No trips leave in that window', action: planAction(a, b, 'depart', start) };
+  },
+  async stop_arrivals({ stop_id }) {
+    if (!stops.some((s) => s.stop_id === stop_id)) throw new Error('unknown stop');
+    const now = Date.now() / 1000, u = (x) => x && (x.late >= 30 ? `late ${x.late}% of the time` : Math.abs(x.avg) < 1 ? 'usually on time' : x.avg > 0 ? `usually ${x.avg} min late` : `usually ${-x.avg} min early`);
+    return { stop: nameOf(stop_id), arrivals: (await arrivals(stop_id)).map((a) => ({
+      route: a.route, toward: a.headsign, time: clockAt(a.time), in_minutes: Math.round((a.time - now) / 60), trip_id: a.trip,
+      status: a.cancelled ? 'cancelled' : a.skipped ? 'not stopping here (detour)' : a.gone ? 'just left' : a.stale ? 'signal lost' : a.tracked ? 'live' : 'scheduled only',
+      ...(a.tracked && { delay_minutes: Math.round((a.delay || 0) / 60) }), ...(a.stopsAway != null && { stops_away: a.stopsAway }), ...(a.label && { bus: a.label }),
+      ...(a.usual && { history: u(a.usual) }), ...(a.last && { last_bus: true }), ...(a.ends && { drop_off_only: true }) })) };
+  },
+  stop_timetable({ stop_id, date, route, after }) {
+    const r = timetableFor(stop_id, date);
+    if (r.error) throw new Error(r.error);
+    const from = after ? atLocal(after, date) : 0;
+    return r.groups.filter((g) => !route || g.route === String(route)).map((g) => ({ route: g.route, toward: g.headsign, times: g.times.filter((t) => t >= from).slice(0, 30).map(clockAt) })).filter((g) => g.times.length);
+  },
+  async route_buses({ route }) {
+    const now = Date.now() / 1000, list = await vehicles([String(route)]);
+    return list.length ? list.map((v) => ({ bus: v.label, toward: v.headsign, ...(v.next && { next_stop: v.next.stop, there_in_minutes: Math.max(0, Math.round((v.next.time - now) / 60)) }), position_age_seconds: v.age })) : 'No buses on that route right now';
+  },
+  async service_alerts({ route }) {
+    const list = (await alerts()).filter((a) => !route || a.routes.includes(String(route)));
+    return list.length ? list.slice(0, 8).map((a) => ({ header: a.header, details: (a.description || '').slice(0, 400), routes: [...new Set(a.routes)] })) : 'No current alerts';
+  },
+  weather: async () => (await weather()) || 'Weather unavailable',
+  my_stuff: () => ({
+    pinned_stops: (sync.get('pins') || []).map((p) => ({ stop_id: p.id, name: p.name })), pinned_routes: (sync.get('routePins') || []).map((r) => r.short),
+    saved_places: sync.get('saved') || {}, commutes: (sync.get('commutes') || []).map((c) => ({ name: c.name, from: c.from.name, to: c.to.name, days: c.days, on: !c.off })),
+  }),
+  propose_pin_stop({ stop_id }) {
+    const s = stops.find((x) => x.stop_id === stop_id); if (!s) throw new Error('unknown stop');
+    return { result: 'Button shown; the user taps it to pin', action: { type: 'pin_stop', stop: { id: s.stop_id, name: s.stop_name, lat: +s.stop_lat, lon: +s.stop_lon } } };
+  },
+  propose_pin_route({ route }) {
+    const r = search.routeList().find((x) => x.short === String(route)); if (!r) throw new Error('unknown route');
+    return { result: 'Button shown; the user taps it to pin', action: { type: 'pin_route', route: { short: r.short, long: r.long, color: r.color } } };
+  },
+  propose_bus_alert({ stop_id, trip_id }) {
+    const t = trips[trip_id], s = stops.find((x) => x.stop_id === stop_id); if (!t || !s) throw new Error('unknown stop or trip');
+    const r = routes[t.route_id] || {};
+    return { result: 'Button shown; the user taps it to turn the alert on', action: { type: 'bus_alert', watch: { stopId: s.stop_id, stopName: s.stop_name, tripId: trip_id, route: r.route_short_name, headsign: t.trip_headsign } } };
+  },
+  propose_commute({ from, to, name, days, start, end, minutes_before }) {
+    const mins = (v) => { const m = /^(\d{1,2}):(\d\d)$/.exec(v || ''); if (!m) throw new Error('times must be HH:MM'); return +m[1] * 60 + +m[2]; };
+    const c = { name: String(name || `To ${ptOf(to).name}`).slice(0, 40), from: ptOf(from), to: ptOf(to), days: [...new Set((days || []).map(Number).filter((d) => d >= 0 && d <= 6))],
+      startMin: mins(start), endMin: mins(end), minutes: [3, 5, 10, 15].includes(+minutes_before) ? +minutes_before : 5 };
+    if (!c.days.length || c.endMin <= c.startMin) throw new Error('need at least one day and an end after the start');
+    return { result: 'Button shown; the user taps it to save', action: { type: 'commute', commute: c } };
+  },
+};
+const chat = require('./chat')({ tools: chatTools });
+
 // ---------- http ----------
-const json = (res, data, code = 200, req) => {
+const json =(res, data, code = 200, req) => {
   const body = Buffer.from(JSON.stringify(data));
   const gz = req && body.length > 2048 && /\bgzip\b/.test(req.headers['accept-encoding'] || ''); // the route map is ~700 KB raw
   res.writeHead(code, { 'content-type': 'application/json', ...(gz && { 'content-encoding': 'gzip' }) });
@@ -514,6 +614,15 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/plan') {
       const ll = (k) => { const [lat, lon] = (u.searchParams.get(k) || '').split(',').map(Number); return { lat, lon }; };
       return json(res, await planTrip(ll('from'), ll('to'), +u.searchParams.get('depart') || 0, +u.searchParams.get('arrive') || 0, u.searchParams.get('accessible') === '1'));
+    }
+    if (p === '/api/chat' && req.method === 'POST') {
+      if (!chat.enabled) return json(res, { error: 'Ask needs a GEMINI_API_KEY on the server' }, 503);
+      const { history, message, here } = await body(req), now = Date.now() / 1000;
+      if (typeof message !== 'string' || !message.trim()) return json(res, { error: 'empty question' }, 400);
+      const today = new Date((now + TZ_OFFSET_SEC) * 1000).toLocaleDateString('en-CA', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      const ctx = { now: clockAt(now), today: `${today}, ${dayOf(now)}`, here: here && Number.isFinite(+here.lat) && Number.isFinite(+here.lon) ? { lat: +here.lat, lon: +here.lon } : null };
+      try { return json(res, await chat.ask(history, message, ctx)); }
+      catch (e) { console.error('chat error', e.message); return json(res, { error: /^gemini (429|503)/.test(e.message) ? 'The assistant is busy right now. Try again in a minute.' : 'Could not reach the assistant' }, 502); }
     }
     if (p === '/api/status') return json(res, status());
     if (p === '/api/alerts') return json(res, await alerts());

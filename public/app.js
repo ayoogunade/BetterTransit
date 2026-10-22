@@ -833,6 +833,62 @@ function openCommuteSheet() {
 }
 renderCommutes(); syncCommutes();
 
+// ---------- ask ----------
+// Chat answered from the app's own data (server: chat.js). The history only lives while the sheet is open. Anything it sets up
+// comes back as an action button, and nothing changes until it is tapped; each action reuses the code its normal button runs.
+const localInput = (t) => new Date(t * 1000 - new Date(t * 1000).getTimezoneOffset() * 60000).toISOString().slice(0, 16); // epoch -> datetime-local value
+const ACTIONS = {
+  plan: { label: () => `${icon('navigation')} Show in Plan`, run: (a, close) => {
+    place.from = { lat: a.from.lat, lon: a.from.lon }; place.to = { lat: a.to.lat, lon: a.to.lon };
+    $('#from').value = a.from.name; $('#to').value = a.to.name;
+    $('#when').value = a.mode === 'now' ? '' : localInput(a.time);
+    close(); setLeave(a.mode); // plans the trip
+  } },
+  pin_stop: { label: (a) => `${icon('pin')} Pin ${esc(a.stop.name)}`, run: (a) => { if (!isStopPinned(a.stop)) toggleStopPin(a.stop); toast(`Pinned ${a.stop.name}`); } },
+  pin_route: { label: (a) => `${icon('pin')} Pin Route ${esc(a.route.short)}`, run: (a) => { addRoutePin(a.route); toast(`Pinned Route ${a.route.short}`); } },
+  bus_alert: { label: (a) => `${icon('bell')} Alert for the ${esc(a.watch.route)} at ${esc(a.watch.stopName)}`, run: (a) => !watching.has(watchKey(a.watch.stopId, a.watch.tripId)) && toggleWatch(a.watch) },
+  commute: { label: (a) => `${icon('bell-ring')} Save commute: ${esc(a.commute.name)}`, run: async (a) => {
+    commutes.push({ id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), ...a.commute });
+    if (await saveCommutes(true)) toast(`Alerts on: ${a.commute.minutes} min before you need to leave`);
+  } },
+};
+// The model writes plain text with the odd **bold** and "- " list line
+const chatText = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').split('\n').map((l) => (/^\s*[-*] /.test(l) ? `<li>${l.replace(/^\s*[-*] /, '')}</li>` : l ? `<p>${l}</p>` : '')).join('').replace(/(<li>.*?<\/li>)+/g, '<ul>$&</ul>');
+function openAskSheet(first) {
+  let history = [], busy = false;
+  const { el, close } = sheetShell(`<div class="sheet-bar"><div><b>Ask</b><small>Answers from live Saskatoon Transit data</small></div><button data-close class="done">Done</button></div>
+    <div class="sheet-list chat" id="chatlog"><div class="msg bot"><p>Ask about buses, trips or timing, like "when should I head home after 5:30?" I can also pin stops or set up alerts.</p></div></div>
+    <form class="chatbar" id="chatform"><input type="text" id="chatq" placeholder="Ask a question" autocomplete="off" enterkeyhint="send" aria-label="Question"><button class="send" aria-label="Send">${icon('send')}</button></form>`);
+  const log = el.querySelector('#chatlog'), input = el.querySelector('#chatq');
+  const add = (cls, html) => { log.insertAdjacentHTML('beforeend', `<div class="msg ${cls}">${html}</div>`); log.scrollTop = log.scrollHeight; return log.lastElementChild; };
+  async function send(q) {
+    if (busy || !q.trim()) return;
+    busy = true; input.value = '';
+    add('mine', `<p>${esc(q)}</p>`);
+    const wait = add('bot pending', '<p>Checking…</p>');
+    const me = (await geoGranted()) ? await here().catch(() => null) : null; // only if location is already allowed: never a permission prompt mid-chat
+    try {
+      const r = await post('/api/chat', { history, message: q, here: me }).then((x) => x.json());
+      if (r.error) throw new Error(r.error);
+      history = r.history;
+      wait.classList.remove('pending');
+      wait.innerHTML = chatText(r.reply || '') + (r.actions || []).map((a, i) => ACTIONS[a.type] ? `<button class="btn act" data-act="${i}">${ACTIONS[a.type].label(a)}</button>` : '').join('');
+      wait.actions = r.actions || [];
+    } catch (e) { wait.classList.remove('pending'); wait.innerHTML = `<p class="err">${esc(e.message === 'Failed to fetch' ? 'Ask needs a connection.' : e.message)}</p>`; }
+    busy = false; log.scrollTop = log.scrollHeight;
+  }
+  el.querySelector('#chatform').onsubmit = (e) => { e.preventDefault(); send(input.value); };
+  el.onclick = async (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    const b = e.target.closest('[data-act]'); if (!b || b.disabled) return;
+    const a = b.closest('.msg').actions[+b.dataset.act];
+    b.disabled = true;
+    try { await ACTIONS[a.type].run(a, close); b.innerHTML = `${icon('check')} Done`; } catch { b.disabled = false; toast('Could not do that'); }
+  };
+  if (first) send(first); else input.focus();
+}
+$('#askform').onsubmit = (e) => { e.preventDefault(); const q = $('#ask').value; $('#ask').value = ''; $('#ask').blur(); openAskSheet(q); };
+
 // ---------- signed-in devices ----------
 // Every sign-in is its own session on the server, so a lost phone can be signed out from here without changing the password.
 // The header button only appears when the server has a login at all (it doesn't in local dev).
