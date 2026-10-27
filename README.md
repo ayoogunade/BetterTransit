@@ -13,6 +13,10 @@ Personal Saskatoon transit app. Reads the city's official GTFS + GTFS-realtime f
 - **Riding**: on a planned trip, tap "I'm on this bus" on a ride leg to get "Your stop is next" a stop before you get off. If another bus follows, it also warns once when you'll miss the connection and re-plans from where you get off.
 - **Last bus**: arrivals and ride legs are tagged when they're the last scheduled trip of the day on that route and direction; commute alerts add "last bus".
 - **Plan from the map**: long-press the map for "Plan from here / to here" (named after a stop within 150 m, else "Dropped pin"). "Show on map" on a trip card draws it: dashed walks and each ride along its stops.
+- **Stop settings**: tap a pinned stop's name to give it a nickname and choose which of its routes the card shows (and its bell alerts for). Both sync with the pins.
+- **Riding extras**: with "I'm on this bus" on, the leg counts down ("4 stops to go · off at 5:12") and the screen stays awake (Wake Lock) until you get off. Stop cards' walk line opens walking directions in Maps.
+- **Fullness**: when the city's feed reports it, live buses show Many seats / Few seats / Standing room next to the fleet number.
+- **Plan shortcuts**: "Leave in 15 / 30 min / 1 h" chips, and Earlier / Later under the results. Anything that fails to load shows a Retry button.
 - **Timetable**: the calendar button on a stop card opens that stop's full day by route and headsign (Today, Tomorrow or any date); `/api/timetable/:stopId?date=YYYY-MM-DD`.
 - **Reliability**: every tracked bus that passes a stop adds its final delay to `data/history.json` (per route, stop, weekday/weekend and hour). Once a slot has 5+ samples, arrivals say "usually 3 min late" or "late 40% of the time here".
 - **Devices**: with a login set, the phone icon in the header lists every signed-in device and signs one out (its push alerts stop too). Each sign-in is its own session in `data/sessions.json`; changing the password still signs everyone out.

@@ -57,6 +57,9 @@ const leaveText = (t) => { const m = Math.round((t - Date.now() / 1000) / 60); r
 const etaHtml = (t, sub = '', cls = '') => `<span class="eta ${cls} ${t - Date.now() / 1000 < 180 ? 'soon' : ''}" data-eta="${t}"><span class="n">${etaText(t)}</span>${sub}</span>`;
 const liveDot = '<i class="pulse" role="img" aria-label="Live"></i>';
 const skeleton = (n) => Array.from({ length: n }, () => '<div class="card skel" aria-hidden="true"><i></i><i></i></div>').join('');
+// A loading / empty / error line in a list (text is HTML). retry: a Retry button (data-retry) that the list's click handler re-runs the load for
+const emptyMsg = (text, retry = false) => `<div class="empty pad">${text}${retry ? `<button class="retry" data-retry>${icon('refresh-cw')} Retry</button>` : ''}</div>`;
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
 
 // Countdowns and "Updated 40s ago" move on their own between the 20s fetches
 let updatedAt = 0, offline = false;
@@ -125,15 +128,15 @@ function searchBox({ input, box, kinds, empty, onPick }) {
       if (localKinds) local = await get(localKinds, q);
       if (id !== seq) return; // a newer keystroke superseded this one
       if (local.length) render(rank(local, q));
-      else if (wantPlaces && q.length >= 3) box.innerHTML = '<div class="empty" style="padding:12px">Searching…</div>';
+      else if (wantPlaces && q.length >= 3) box.innerHTML = emptyMsg('Searching…');
       if (wantPlaces && q.length >= 3) {
         const places = await get('place', q).catch(() => []);
         if (id !== seq) return;
         local = [...local, ...places];
       }
-    } catch { if (id === seq) box.innerHTML = '<div class="empty" style="padding:12px">Search needs a connection</div>'; return; }
+    } catch { if (id === seq) box.innerHTML = emptyMsg('Search needs a connection', true); return; }
     if (id !== seq) return;
-    local.length ? render(rank(local, q)) : (box.innerHTML = '<div class="empty" style="padding:12px">No matches</div>');
+    local.length ? render(rank(local, q)) : (box.innerHTML = emptyMsg('No matches'));
   };
   const close = () => { seq++; box.innerHTML = ''; };
   const ctx = {
@@ -149,7 +152,10 @@ function searchBox({ input, box, kinds, empty, onPick }) {
   input.addEventListener('focus', () => { document.body.classList.add('typing'); setTimeout(() => input.scrollIntoView({ block: 'start', behavior: 'smooth' }), 250); run(); });
   input.addEventListener('blur', () => setTimeout(() => document.body.classList.remove('typing'), 400));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && items[0]) { e.preventDefault(); pick(items[0]); } });
-  box.addEventListener('click', (e) => { const el = e.target.closest('[data-i]'); if (el) pick(items[+el.dataset.i]); });
+  box.addEventListener('click', (e) => {
+    if (e.target.closest('[data-retry]')) return void run();
+    const el = e.target.closest('[data-i]'); if (el) pick(items[+el.dataset.i]);
+  });
   document.addEventListener('click', (e) => { if (!input.parentElement.contains(e.target)) close(); });
   return ctx;
 }
@@ -185,13 +191,17 @@ function sheetShell(html, { mini = false, onClose } = {}) {
 // Full-screen list of every stop on a route (one tab per direction, with a filter box). One scroll area only, so it scrolls
 // reliably on iOS. multi: stays open so you can pin several stops (onStop toggles); otherwise picking a stop closes it.
 async function openStopSheet(route, { multi = false, isPinned = () => false, onStop }) {
-  const { el, close } = sheetShell('<div class="sheet-bar"><b></b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading stops…</div>');
-  el.querySelector('b').textContent = `Route ${route.short}`;
+  const bar = `<div class="sheet-bar"><b>Route ${esc(route.short)}</b><button data-close class="done">Done</button></div>`;
+  const { el, close } = sheetShell(bar + emptyMsg('Loading stops…'));
   let dirs, sel = 0, q = '';
-  try { dirs = await api(`/api/route/${encodeURIComponent(route.short)}/stops`); }
-  catch { el.querySelector('.empty').textContent = 'Could not load stops. Check your connection.'; el.onclick = (e) => e.target.closest('[data-close]') && close(); return; }
+  const load = async () => {
+    el.innerHTML = bar + emptyMsg('Loading stops…');
+    try { dirs = await api(`/api/route/${encodeURIComponent(route.short)}/stops`); }
+    catch { return void (el.innerHTML = bar + emptyMsg('Could not load stops. Check your connection.', true)); }
+    draw();
+  };
   // a stop may only exist in the other direction: say so, and let one tap switch there
-  const otherMatches = () => '<div class="empty" style="padding:16px">No stops match in this direction.</div>' + dirs
+  const otherMatches = () => emptyMsg('No stops match in this direction.') + dirs
     .map((d, k) => [k, d, d.stops.filter((st) => st.name.toLowerCase().includes(q)).length]).filter(([k, , n]) => k !== sel && n)
     .map(([k, d, n]) => `<div class="sg" role="button" tabindex="0" data-d="${k}"><span class="t"><b>${n} match${n > 1 ? 'es' : ''} going ${icon('arrow-right')} ${esc(d.headsign)}</b><small>Tap to view</small></span></div>`).join('');
   const rows = () => dirs[sel].stops.map((st, i) => ({ st, i })).filter(({ st }) => !q || st.name.toLowerCase().includes(q))
@@ -205,9 +215,10 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
     const input = el.querySelector('input');
     input.oninput = () => { q = input.value.trim().toLowerCase(); el.querySelector('.sheet-list').innerHTML = rows(); };
   };
-  draw();
   el.onclick = (e) => {
     if (e.target.closest('[data-close]')) return close();
+    if (e.target.closest('[data-retry]')) return load();
+    if (!dirs) return;
     const d = e.target.closest('[data-d]');
     if (d) { sel = +d.dataset.d; return draw(); } // the filter text carries over to the other direction
     const row = e.target.closest('[data-s]');
@@ -218,23 +229,29 @@ async function openStopSheet(route, { multi = false, isPinned = () => false, onS
     const on = isPinned(st), mark = row.querySelector('.mark');
     mark.innerHTML = icon(on ? 'check' : 'plus'); mark.classList.toggle('on', on);
   };
+  load();
 }
 
 // Full-screen timeline of one trip: clock time and "+N min" (from the next stop) at every stop. stopId highlights the stop you tapped from.
 async function openTripSheet(tripId, stopId) {
-  const { el, close } = sheetShell('<div class="sheet-bar"><b>Trip</b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading trip…</div>');
-  el.onclick = (e) => e.target.closest('[data-close]') && close();
-  let t;
-  try { t = await api('/api/trip/' + encodeURIComponent(tripId)); }
-  catch { el.querySelector('.empty').textContent = 'Could not load this trip.'; return; }
-  const now = Date.now() / 1000;
-  const next = t.stops.findIndex((x) => x.time > now - 30), first = next < 0 ? t.stops.length - 1 : next, base = t.stops[first].time;
-  const rows = t.stops.map((x, i) => `<div class="sg ${i < first ? 'past' : ''} ${x.id === stopId ? 'here' : ''}" ${i === first ? 'data-first' : ''}><span class="t"><b>${esc(x.name)}</b></span>
-    <span class="when"><b>${clock(x.time)}</b>${i < first ? '' : `<small>+${Math.round((x.time - base) / 60)} min</small>`}</span></div>`).join('');
-  el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times'}${t.label ? ` · ${busNo(t.label)}` : ''} · from next stop</small></div><button data-close class="done">Done</button></div>
-    <div class="sheet-list">${rows}</div>`;
-  const list = el.querySelector('.sheet-list'), row = list.querySelector('[data-first]');
-  if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  const bar = '<div class="sheet-bar"><b>Trip</b><button data-close class="done">Done</button></div>';
+  const { el, close } = sheetShell(bar + emptyMsg('Loading trip…'));
+  el.onclick = (e) => { if (e.target.closest('[data-close]')) close(); else if (e.target.closest('[data-retry]')) load(); };
+  async function load() {
+    el.innerHTML = bar + emptyMsg('Loading trip…');
+    let t;
+    try { t = await api('/api/trip/' + encodeURIComponent(tripId)); }
+    catch { return void (el.innerHTML = bar + emptyMsg('Could not load this trip.', true)); }
+    const now = Date.now() / 1000;
+    const next = t.stops.findIndex((x) => x.time > now - 30), first = next < 0 ? t.stops.length - 1 : next, base = t.stops[first].time;
+    const rows = t.stops.map((x, i) => `<div class="sg ${i < first ? 'past' : ''} ${x.id === stopId ? 'here' : ''}" ${i === first ? 'data-first' : ''}><span class="t"><b>${esc(x.name)}</b></span>
+      <span class="when"><b>${clock(x.time)}</b>${i < first ? '' : `<small>+${Math.round((x.time - base) / 60)} min</small>`}</span></div>`).join('');
+    el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${[t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times', t.label ? busNo(t.label) : '', fullness(t.occ), 'from next stop'].filter(Boolean).join(' · ')}</small></div><button data-close class="done">Done</button></div>
+      <div class="sheet-list">${rows}</div>`;
+    const list = el.querySelector('.sheet-list'), row = list.querySelector('[data-first]');
+    if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+  }
+  load();
 }
 
 // Full-screen timetable of one stop for a day: departures grouped by route + headsign as time grids. Today greys the past and scrolls to now.
@@ -250,18 +267,19 @@ function openTimetableSheet(stop) {
   async function load(d) {
     const id = ++seq, now = Date.now() / 1000;
     $$('.dirs [data-day]', el).forEach((b) => b.classList.toggle('on', b.dataset.day === d)); pick.value = d;
-    list.innerHTML = '<div class="empty" style="padding:16px">Loading…</div>';
+    list.innerHTML = emptyMsg('Loading…');
     let g;
     try { g = await api(`/api/timetable/${encodeURIComponent(stop.id)}?date=${d}`); }
-    catch { if (id === seq) list.innerHTML = '<div class="empty" style="padding:16px">Could not load the timetable. Check your connection.</div>'; return; }
+    catch { if (id === seq) list.innerHTML = emptyMsg('Could not load the timetable. Check your connection.', true); return; }
     if (id !== seq) return; // a newer day was picked meanwhile
     list.innerHTML = g.map((x) => { const nx = d === today ? x.times.findIndex((t) => t >= now) : -1; return `<div class="ttgroup"><div class="tthead">${badge(x.route, x.color)}<b>${esc(x.headsign)}</b></div>
-      <div class="ttgrid">${x.times.map((t, i) => `<span class="${d === today && t < now ? 'past' : ''} ${i === nx ? 'next' : ''}">${clock(t)}</span>`).join('')}</div></div>`; }).join('') || '<div class="empty" style="padding:16px">No buses stop here on this day.</div>';
+      <div class="ttgrid">${x.times.map((t, i) => `<span class="${d === today && t < now ? 'past' : ''} ${i === nx ? 'next' : ''}">${clock(t)}</span>`).join('')}</div></div>`; }).join('') || emptyMsg('No buses stop here on this day.');
     const first = d === today && list.querySelector('.ttgrid span:not(.past)');
     if (first) list.scrollTop = first.closest('.ttgroup').getBoundingClientRect().top - list.getBoundingClientRect().top;
   }
   el.onclick = (e) => {
     if (e.target.closest('[data-close]')) return close();
+    if (e.target.closest('[data-retry]')) return load(pick.value);
     const b = e.target.closest('[data-day]'); if (b) load(b.dataset.day);
   };
   pick.onchange = () => pick.value && load(pick.value);
@@ -278,16 +296,17 @@ function applyRouteFilter() {
   if (!$('#alerts').hidden) refreshAlerts();
 }
 async function openRoutesSheet() {
-  const { el, close } = sheetShell('<div class="sheet-bar"><b>Routes to show</b><button data-close class="done">Done</button></div><div class="empty" style="padding:16px">Loading routes…</div>', { onClose: applyRouteFilter });
-  el.onclick = (e) => e.target.closest('[data-close]') && close();
+  const bar = '<div class="sheet-bar"><b>Routes to show</b><button data-close class="done">Done</button></div>';
+  const { el, close } = sheetShell(bar + emptyMsg('Loading routes…'), { onClose: applyRouteFilter });
+  el.onclick = (e) => { if (e.target.closest('[data-close]')) close(); else if (e.target.closest('[data-retry]')) { close(); openRoutesSheet(); } };
   try { allRoutes ||= await api('/api/routes'); }
-  catch { el.querySelector('.empty').textContent = 'Could not load routes. Check your connection.'; return; }
+  catch { return void (el.innerHTML = bar + emptyMsg('Could not load routes. Check your connection.', true)); }
   const sel = new Set(shown || allRoutes.map((r) => r.short));
   let q = '';
   const save = () => { shown = sel.size === allRoutes.length ? null : [...sel]; store.set('shownRoutes', shown); };
   const rows = () => allRoutes.filter((r) => !q || `${r.short} ${r.long}`.toLowerCase().includes(q))
     .map((r) => `<div class="sg ${sel.has(r.short) ? '' : 'off'}" role="button" tabindex="0" aria-pressed="${sel.has(r.short)}" data-r="${esc(r.short)}">${badge(r.short, r.color)}<span class="t"><b>${esc(r.long)}</b></span><span class="mark ${sel.has(r.short) ? 'on' : ''}">${sel.has(r.short) ? icon('check') : ''}</span></div>`).join('')
-    || '<div class="empty" style="padding:16px">No routes match.</div>';
+    || emptyMsg('No routes match.');
   const count = () => `${sel.size} of ${allRoutes.length} routes shown on the map and in alerts`;
   el.innerHTML = `<div class="sheet-bar"><div><b>Routes to show</b><small id="rcount">${count()}</small></div><button data-close class="done">Done</button></div>
     <div class="dirs"><button data-act="all">Show all</button><button data-act="none">Hide all</button>${routePins.length ? '<button data-act="pinned">Only pinned routes</button>' : ''}</div>
@@ -316,6 +335,10 @@ $('#routes-btn').onclick = openRoutesSheet;
 
 // ---------- pinned ----------
 const isStopPinned = (s) => pins.some((p) => p.id === s.id);
+// A pin can carry a nickname (nick) and its own route list (routes: only these show on its card and ring its alerts), both synced with the pins
+const pinOf = (id) => pins.find((p) => p.id === id);
+const stopName = (s) => pinOf(s.id)?.nick || s.name;
+const atStop = (id, route) => { const r = pinOf(id)?.routes; return routeOn(route) && (!r || r.includes(route)); };
 const toggleStopPin = (s) => {
   pins = isStopPinned(s) ? pins.filter((p) => p.id !== s.id) : [...pins, { id: s.id, name: s.name, lat: s.lat, lon: s.lon }];
   store.set('pins', pins); refreshPins();
@@ -343,6 +366,9 @@ const usualText = (a) => {
   return !u ? '' : u.late >= 30 ? `late ${u.late}% of the time here` : Math.abs(u.avg) < 1 ? 'usually on time' : u.avg > 0 ? `usually ${u.avg} min late` : `usually ${-u.avg} min early`;
 };
 const busNo = (label) => `<span class="busno">Bus #${esc(label)}</span>`; // the bus's fleet number, kept quiet
+// How full the bus is (GTFS-rt occupancy 0-6), when the feed says; green while there are seats, amber once it's standing room
+const OCC = ['Empty', 'Many seats', 'Few seats', 'Standing room', 'Crowded', 'Full', 'Not taking riders'];
+const fullness = (occ) => (occ == null ? '' : `<span class="occ ${occ >= 3 ? 'busy' : occ === 2 ? '' : 'roomy'}">${icon('users')} ${OCC[occ]}</span>`);
 const lastBus = `<span class="lastbus">${icon('moon')} Last bus</span>`; // the last scheduled trip of the day on this route and direction
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
@@ -352,7 +378,7 @@ function statusOf(a) {
   const ends = a.ends ? (a.continuesAs ? contText(a.continuesAs) : 'Drop-off only') : '';
   if (!a.tracked) return [ends, 'Not tracked yet', usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
-  return [a.label ? busNo(a.label) : '', ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
+  return [a.label ? busNo(a.label) : '', fullness(a.occ), ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : '', a.last ? lastBus : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
 }
 const arrivalEta = (a) => (!isComing(a)
@@ -367,11 +393,14 @@ function catchLine(p, list, dist) {
   const walk = walkMins(dist), now = Date.now() / 1000, a = list.find((x) => canBoard(x) && x.time - walk * 60 - 60 >= now); // a minute to spare
   if (!a) return '';
   const at = a.time - walk * 60 - 60;
-  return `<div class="catch">${icon('footprints')} ${walk} min walk · <b data-leavein="${at}">${leaveText(at)}</b> for the ${esc(a.route)} at ${clock(a.time)}</div>`;
+  return `<a class="catch" href="${walkUrl(p)}" target="_blank" rel="noopener">${icon('footprints')} ${walk} min walk · <b data-leavein="${at}">${leaveText(at)}</b> for the ${esc(a.route)} at ${clock(a.time)}<span class="go">${icon('navigation')} Directions</span></a>`;
 }
+// Walking directions to a stop in the phone's maps app
+const walkUrl = (p) => (IOS ? `https://maps.apple.com/?daddr=${p.lat},${p.lon}&dirflg=w` : `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}&travelmode=walking`);
 
 function stopCard(p, list, nearby = false) {
-  list = list.filter((a) => routeOn(a.route));
+  list = list.filter((a) => atStop(p.id, a.route));
+  const own = pinOf(p.id)?.routes, name = stopName(p);
   const items = list.slice(0, nearby ? 4 : 6).map((a, i) => `
     <div class="row ${i ? '' : 'first'} ${isComing(a) ? '' : 'off'} ${a.ends ? 'dropoff' : ''}" role="button" tabindex="0" data-open="${esc(a.trip)}" data-stop="${esc(p.id)}">
       ${badge(a.route, a.color)}
@@ -381,17 +410,20 @@ function stopCard(p, list, nearby = false) {
     </div>`);
   // pinned stops show the next bus you can board (and any cancelled / drop-off one before it); the rest sit behind a chevron
   const lead = Math.max(1, list.slice(0, items.length).findIndex(canBoard) + 1);
-  const rows = !items.length ? `<div class="empty">No upcoming buses${shown ? ' on your routes' : ''}</div>`
+  const rows = !items.length ? `<div class="empty">No upcoming buses${shown || own ? ' on your routes' : ''}</div>`
     : nearby || items.length <= lead ? items.join('')
     : items.slice(0, lead).join('') + `<div class="more">${items.slice(lead).join('')}</div><button class="morebtn" data-more="${esc(p.id)}">${icon('chevron-down')} <span>${items.length - lead} more</span></button>`;
   const mins = stopAlerts[p.id], belled = mins || list.some((a) => watching.has(watchKey(p.id, a.trip)));
-  const bell = `<button class="stopbell ${belled ? 'on' : ''}" data-alerts="${esc(p.id)}" data-nearby="${nearby ? 1 : ''}" aria-label="Alerts for ${esc(p.name)}">${icon(mins ? 'bell-ring' : 'bell')}</button>`;
-  const tt = `<button data-tt="${esc(p.id)}" data-name="${esc(p.name)}" aria-label="Timetable for ${esc(p.name)}">${icon('calendar-clock')}</button>`;
+  const bell = `<button class="stopbell ${belled ? 'on' : ''}" data-alerts="${esc(p.id)}" data-nearby="${nearby ? 1 : ''}" aria-label="Alerts for ${esc(name)}">${icon(mins ? 'bell-ring' : 'bell')}</button>`;
+  const tt = `<button data-tt="${esc(p.id)}" data-name="${esc(name)}" aria-label="Timetable for ${esc(name)}">${icon('calendar-clock')}</button>`;
   const act = nearby
     ? `${tt}${bell}<button data-pin="${esc(p.id)}" data-name="${esc(p.name)}" data-lat="${p.lat}" data-lon="${p.lon}" class="${isStopPinned(p) ? 'on' : ''}" aria-label="${isStopPinned(p) ? 'Unpin' : 'Pin'} stop">${icon('pin')}</button>`
     : `${mins ? `<small class="dist">${mins} min</small>` : ''}${tt}${bell}<button data-unpin="${esc(p.id)}" aria-label="Unpin">${icon('x')}</button>`;
   const dist = nearby ? p.dist : myPos && p.lat ? metres(myPos, p) : null;
-  return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2><span class="name">${esc(p.name)}</span>${act}</h2>${catchLine(p, list, dist)}${rows}</div>`;
+  // a pinned stop's name opens its settings (nickname, routes); the icon after it says which you can do / have done
+  const title = nearby ? `<span class="name">${esc(name)}</span>`
+    : `<button class="name" data-edit="${esc(p.id)}" aria-label="Edit ${esc(name)}: nickname and routes"><span>${esc(name)}</span>${icon(own ? 'funnel' : 'pencil')}</button>`;
+  return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2>${title}${act}</h2>${catchLine(p, list, dist)}${rows}</div>`;
 }
 
 function routeCard(r, buses) {
@@ -405,7 +437,7 @@ function routeCard(r, buses) {
       return `
     <div class="row ${i ? '' : 'first'}" role="button" tabindex="0" data-open="${esc(b.trip)}">
       <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing}deg)">${icon('navigation-2')}</span>
-      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}${b.label ? `<small>${busNo(b.label)}</small>` : ''}</span>
+      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}${b.label || b.occ != null ? `<small>${[b.label ? busNo(b.label) : '', fullness(b.occ)].filter(Boolean).join(' · ')}</small>` : ''}</span>
       ${b.next ? etaHtml(b.next.time, age) : `<span class="eta">${age}</span>`}
     </div>`;
     }).join('')).join('') : '<div class="empty">No buses in service right now</div>';
@@ -418,16 +450,16 @@ function routeCard(r, buses) {
 // Both the sort choice and "My order" (the pins list itself) sync between devices.
 let pinLists = new Map(), pinBuses = [], reordering = false, stopSort = store.get('stopSort', 'mine');
 const SORTS = { mine: 'My order', next: 'Next bus', name: 'Name' };
-const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => routeOn(x.route) && canBoard(x) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
-const sortedPins = () => (stopSort === 'next' ? [...pins].sort((a, b) => nextTime(a) - nextTime(b)) : stopSort === 'name' ? [...pins].sort((a, b) => a.name.localeCompare(b.name)) : pins);
+const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => atStop(p.id, x.route) && canBoard(x) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
+const sortedPins = () => (stopSort === 'next' ? [...pins].sort((a, b) => nextTime(a) - nextTime(b)) : stopSort === 'name' ? [...pins].sort((a, b) => stopName(a).localeCompare(stopName(b))) : pins);
 const stopsHeader = () => `<div class="section-title sorthead"><span>Stops</span>${pins.length > 1 ? `<span class="sortbox">${stopSort === 'mine' ? `<button data-reorder class="${reordering ? 'on' : ''}" aria-label="Reorder stops">${icon('arrow-up-down')}</button>` : ''}<select id="stopsort" aria-label="Sort stops">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === stopSort ? 'selected' : ''}>${v}</option>`).join('')}</select></span>` : ''}</div>`;
-const reorderList = () => `<div class="card">${pins.map((p, i) => `<div class="sg reorder"><span class="t"><b>${esc(p.name)}</b></span>
+const reorderList = () => `<div class="card">${pins.map((p, i) => `<div class="sg reorder"><span class="t"><b>${esc(stopName(p))}</b></span>
   <button data-move="${i}" data-dir="-1" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up')}</button><button data-move="${i}" data-dir="1" aria-label="Move down" ${i === pins.length - 1 ? 'disabled' : ''}>${icon('chevron-down')}</button></div>`).join('')}</div>`;
 
 function renderPins() {
   $('#pins').innerHTML = (shown ? filterBar() : '') + ((pins.length ? stopsHeader() + (reordering && stopSort === 'mine' ? reorderList() : sortedPins().map((p) => stopCard(p, pinLists.get(p.id) || [])).join('')) : '')
     + (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, pinBuses)).join('') : '')
-    || '<div class="empty" style="padding:24px 4px">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>');
+    || '<div class="empty intro">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>');
 }
 async function refreshPins() {
   try {
@@ -495,7 +527,7 @@ async function toggleWatch(w) {
 
 // Every bus at a pinned stop (only the routes you chose in Routes to show): alert N min before each one until turned off
 let stopAlerts = store.get('stopAlerts', {}); // stopId -> minutes
-const stopWatch = (id) => ({ stopId: id, stopName: (pins.find((p) => p.id === id) || {}).name, standing: true, minutes: stopAlerts[id], routes: shown });
+const stopWatch = (id) => { const p = pinOf(id) || {}; return { stopId: id, stopName: p.nick || p.name, standing: true, minutes: stopAlerts[id], routes: p.routes ? p.routes.filter(routeOn) : shown }; };
 // mins: turn on (or change) at that many minutes; null: turn off
 async function setStopAlert(id, mins) {
   try {
@@ -539,14 +571,14 @@ function openAlertSheet(stop, arrivals) {
   const pinned = isStopPinned(stop);
   const { el, close } = sheetShell('', { mini: true, onClose: () => { renderPins(); if (nearbyData) renderNearby(); } });
   const draw = () => {
-    const list = arrivals().filter((a) => routeOn(a.route) && isComing(a) && a.time > Date.now() / 1000 - 30).slice(0, 6), standing = stop.id in stopAlerts;
-    el.innerHTML = `<div class="sheet-bar"><div><b>Alerts</b><small>${esc(stop.name)}</small></div><button data-close class="done">Done</button></div>
+    const list = arrivals().filter((a) => atStop(stop.id, a.route) && isComing(a) && a.time > Date.now() / 1000 - 30).slice(0, 6), standing = stop.id in stopAlerts;
+    el.innerHTML = `<div class="sheet-bar"><div><b>Alerts</b><small>${esc(stopName(stop))}</small></div><button data-close class="done">Done</button></div>
       <div class="sheet-list">
         <div class="alabel">Notify me before the bus arrives</div>
         <div class="seg wide" role="group" aria-label="Minutes before">${ALERT_MINS.map((n) => `<button data-mins="${n}" class="${n === mins ? 'on' : ''}" aria-pressed="${n === mins}">${n} min</button>`).join('')}</div>
         ${pinned ? `<div class="sg" role="switch" tabindex="0" aria-checked="${standing}" data-standing><span class="ico">${icon('bell-ring')}</span><span class="t"><b>Every bus at this stop</b><small>On the routes you show, until you turn it off</small></span><span class="switch ${standing ? 'on' : ''}"></span></div>` : ''}
         <div class="alabel">${pinned ? 'Or just one bus' : 'Pick a bus'}</div>
-        ${list.map((a, i) => { const on = watching.has(watchKey(stop.id, a.trip)); return `<div class="sg" role="button" tabindex="0" aria-pressed="${on}" data-w="${i}">${badge(a.route, a.color)}<span class="t"><b>${esc(a.headsign)}</b><small>${clock(a.time)} · ${etaText(a.time)}</small></span><span class="mark ${on ? 'on' : ''}">${icon(on ? 'check' : 'bell')}</span></div>`; }).join('') || '<div class="empty" style="padding:12px 14px">No upcoming buses</div>'}
+        ${list.map((a, i) => { const on = watching.has(watchKey(stop.id, a.trip)); return `<div class="sg" role="button" tabindex="0" aria-pressed="${on}" data-w="${i}">${badge(a.route, a.color)}<span class="t"><b>${esc(a.headsign)}</b><small>${clock(a.time)} · ${etaText(a.time)}</small></span><span class="mark ${on ? 'on' : ''}">${icon(on ? 'check' : 'bell')}</span></div>`; }).join('') || emptyMsg('No upcoming buses')}
       </div>`;
     return list;
   };
@@ -558,16 +590,65 @@ function openAlertSheet(stop, arrivals) {
     busy = true;
     if (m) { mins = +m.dataset.mins; if (stop.id in stopAlerts) await setStopAlert(stop.id, mins); }
     else if (sw) await setStopAlert(stop.id, stop.id in stopAlerts ? null : mins);
-    else if (w) { const a = list[+w.dataset.w]; await toggleWatch({ stopId: stop.id, stopName: stop.name, tripId: a.trip, route: a.route, headsign: a.headsign, minutes: mins }); }
+    else if (w) { const a = list[+w.dataset.w]; await toggleWatch({ stopId: stop.id, stopName: stopName(stop), tripId: a.trip, route: a.route, headsign: a.headsign, minutes: mins }); }
     busy = false;
     if (el.isConnected) list = draw();
   };
+}
+
+// Tap a pinned stop's name: a nickname, and which of the routes serving it the card shows. The routes come from today's timetable
+// (plus anything on the card now), so a route that isn't running this hour can still be chosen.
+function openStopEditSheet(id) {
+  const p = pinOf(id); if (!p) return;
+  let nick = p.nick || '', routes = null, sel = null, failed = false;
+  const { el, close } = sheetShell('', { mini: true });
+  const routeRows = () => routes.map((r) => { const on = sel.has(r.route); return `<div class="sg ${on ? '' : 'off'}" role="button" tabindex="0" aria-pressed="${on}" data-r="${esc(r.route)}">${badge(r.route, r.color)}<span class="t"><b>${esc(r.heads.join(' · '))}</b></span><span class="mark ${on ? 'on' : ''}">${on ? icon('check') : ''}</span></div>`; }).join('')
+    || emptyMsg('No buses stop here today.');
+  const draw = () => {
+    el.innerHTML = `<div class="sheet-bar"><div><b>Stop settings</b><small>${esc(p.name)}</small></div><button data-close class="done">Cancel</button></div>
+      <div class="sheet-list cform">
+        <label class="alabel" for="snick">Nickname</label><input id="snick" type="text" value="${esc(nick)}" placeholder="${esc(p.name)}" maxlength="40" autocomplete="off">
+        <div class="alabel">Routes on this card</div>
+        ${routes ? routeRows() : failed ? emptyMsg("Could not load this stop's routes.", true) : emptyMsg('Loading routes…')}
+        <div class="btnrow"><button class="btn primary" data-save>${icon('check')} Save</button></div>
+      </div>`;
+    el.querySelector('#snick').oninput = (e) => { nick = e.target.value; };
+  };
+  const load = async () => {
+    failed = false; draw();
+    try {
+      const g = await api(`/api/timetable/${encodeURIComponent(id)}?date=${ymd(Date.now())}`), by = new Map();
+      for (const x of [...g, ...(pinLists.get(id) || [])]) {
+        const r = by.get(x.route) || by.set(x.route, { route: x.route, color: x.color, heads: [] }).get(x.route);
+        if (x.headsign && !r.heads.includes(x.headsign)) r.heads.push(x.headsign);
+      }
+      routes = [...by.values()].sort((a, b) => num(a.route) - num(b.route) || a.route.localeCompare(b.route));
+      sel = new Set(p.routes || routes.map((r) => r.route));
+    } catch { failed = true; }
+    if (el.isConnected) draw();
+  };
+  el.onclick = (e) => {
+    if (e.target.closest('[data-close]')) return close();
+    if (e.target.closest('[data-retry]')) return load();
+    const row = e.target.closest('[data-r]');
+    if (row) { const k = row.dataset.r; sel.has(k) ? sel.delete(k) : sel.add(k); return draw(); }
+    if (!e.target.closest('[data-save]')) return;
+    if (sel && !sel.size) return toast('Pick at least one route');
+    const n = nick.trim();
+    if (n && n !== p.name) p.nick = n; else delete p.nick;
+    if (sel) { if (routes.every((r) => sel.has(r.route))) delete p.routes; else p.routes = [...sel]; }
+    store.set('pins', pins); renderPins();
+    if (stopAlerts[id]) syncStopAlerts(); // its standing alert follows the new routes and name
+    close(); toast('Stop saved');
+  };
+  load();
 }
 
 $('#pins').onclick = $('#nearby').onclick = (e) => {
   const t = e.target.closest('button');
   if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
   if (t.dataset.tt) return openTimetableSheet({ id: t.dataset.tt, name: t.dataset.name });
+  if (t.dataset.edit) return openStopEditSheet(t.dataset.edit);
   if (t.dataset.editroutes !== undefined) return openRoutesSheet();
   if (t.dataset.reorder !== undefined) { reordering = !reordering; return renderPins(); }
   if (t.dataset.move) { // swap with the neighbour; no refetch, so it's instant
@@ -586,7 +667,7 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
     const i = pins.findIndex((p) => p.id === t.dataset.unpin), p = pins[i], mins = stopAlerts[p.id];
     if (mins) setStopAlert(p.id, null);
     pins.splice(i, 1); store.set('pins', pins); renderPins();
-    return toast(`Unpinned ${p.name}`, 'Undo', () => { pins.splice(Math.min(i, pins.length), 0, p); store.set('pins', pins); if (mins) setStopAlert(p.id, mins); renderPins(); });
+    return toast(`Unpinned ${stopName(p)}`, 'Undo', () => { pins.splice(Math.min(i, pins.length), 0, p); store.set('pins', pins); if (mins) setStopAlert(p.id, mins); renderPins(); });
   }
   if (t.dataset.unroute) {
     const i = routePins.findIndex((r) => r.short === t.dataset.unroute), r = routePins[i];
@@ -682,29 +763,42 @@ $('#acc').onclick = () => { accessible = !accessible; store.set('accessible', ac
 showAccessible();
 // Leave now, depart at a time, or arrive by a time; the picker only appears for the last two, so it's never a blank box
 let leaveMode = 'now';
+const setWhenAt = (ms) => { const d = new Date(ms); $('#when').value = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }; // the picker wants local time
 const setLeave = (mode) => {
   leaveMode = mode;
   $$('#leave [data-when]').forEach((b) => b.classList.toggle('on', b.dataset.when === mode)); $('#when').hidden = mode === 'now';
-  if (mode !== 'now' && !$('#when').value) { // default to the next half hour (arrive by: the one after, so there's time to get there), in local time
-    const d = new Date(Math.ceil((Date.now() + (mode === 'arrive' ? 1800000 : 0) + 60000) / 1800000) * 1800000);
-    $('#when').value = new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  }
+  $('#quick span').textContent = mode === 'arrive' ? 'Arrive in' : 'Leave in';
+  // default to the next half hour (arrive by: the one after, so there's time to get there)
+  if (mode !== 'now' && !$('#when').value) setWhenAt(Math.ceil((Date.now() + (mode === 'arrive' ? 1800000 : 0) + 60000) / 1800000) * 1800000);
   if (mode === 'now') $('#when').value = '';
   planTrip();
 };
 $$('#leave [data-when]').forEach((b) => (b.onclick = () => setLeave(b.dataset.when)));
+// "Leave in 15 min" without the date picker; from Leave now it switches to Depart at
+$('#quick').onclick = (e) => { const b = e.target.closest('[data-in]'); if (b) { setWhenAt(Date.now() + b.dataset.in * 60000); setLeave(leaveMode === 'now' ? 'depart' : leaveMode); } };
+// Earlier / Later under the results: move the time just past the options shown and plan again
+// (depart: after the last one leaves, or 30 min before the first; arrive by: before the earliest arrival, or 30 min after the latest)
+function shiftTrips(dir) {
+  const key = leaveMode === 'arrive' ? 'arrive' : 'leave', ts = trips.map((r) => r[key]);
+  const at = dir > 0 ? Math.max(...ts) + (key === 'leave' ? 60 : 1800) : Math.min(...ts) - (key === 'leave' ? 1800 : 60);
+  setWhenAt(Math.max(at * 1000, Date.now())); setLeave(leaveMode === 'now' ? 'depart' : leaveMode);
+}
+const canEarlier = () => (leaveMode === 'arrive' ? true : leaveMode === 'depart' && Math.min(...trips.map((r) => r.leave)) - 60 > Date.now() / 1000);
 
 async function planTrip() {
   if (!place.from || !place.to) return;
   clearTripMap();
-  $('#trip').innerHTML = '<div class="empty">Planning…</div>';
+  $('#trip').innerHTML = emptyMsg('Planning…');
   const t = $('#when').value ? Math.floor(new Date($('#when').value).getTime() / 1000) : 0;
   let r, wx;
   try { [r, wx] = await Promise.all([api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`), api('/api/weather').catch(() => null)]); }
-  catch { return ($('#trip').innerHTML = '<div class="empty">Planning needs a connection.</div>'); }
-  if (!r || !r.length) return ($('#trip').innerHTML = `<div class="empty">${leaveMode === 'arrive' && t ? `Nothing gets there by ${clock(t)}. Try a later time.` : 'No route found. Try a different time or place.'}</div>`);
+  catch { return ($('#trip').innerHTML = emptyMsg('Planning needs a connection.', true)); }
+  if (!r || !r.length) return ($('#trip').innerHTML = leaveMode === 'arrive' && t ? emptyMsg(`Nothing gets there by ${clock(t)}.`) + `<div class="btnrow"><button class="btn" data-later>${icon('clock-plus')} Arrive 30 min later</button></div>` : emptyMsg('No route found. Try a different time or place.'));
   trips = r; planEnds = { from: place.from, to: place.to }; // what "Show on map" draws walks to (place can change before the next plan)
-  $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°F feels like ${wx.feels}°F · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('') + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
+  $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°F feels like ${wx.feels}°F · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('')
+    + `<div class="btnrow">${canEarlier() ? `<button class="btn" data-shift="-1">${icon('chevron-left')} Earlier</button>` : ''}<button class="btn" data-shift="1">Later ${icon('chevron-right')}</button></div>`
+    + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
+  refreshRides();
 }
 let trips = [], planEnds = null;
 const firstRide = (i) => trips[i].legs.find((l) => l.type === 'ride');
@@ -722,12 +816,19 @@ const tripPinLabel = (l) => `${icon('pin')} ${isStopPinned(l.board) ? 'Stop pinn
 $('#trip').onclick = async (e) => {
   const b = e.target.closest('button');
   if (b?.dataset.savecommute !== undefined) return openCommuteSheet();
+  if (b?.dataset.retry !== undefined) return planTrip();
+  if (b?.dataset.shift) return shiftTrips(+b.dataset.shift);
+  if (b?.dataset.later !== undefined) { setWhenAt(new Date($('#when').value).getTime() + 1800000); return planTrip(); }
   if (b?.dataset.tpin) { const l = firstRide(+b.dataset.tpin); toggleStopPin(l.board); b.classList.toggle('on', isStopPinned(l.board)); return void (b.innerHTML = tripPinLabel(l)); }
   if (b?.dataset.ride) {
     const [o, j] = b.dataset.ride.split(':').map(Number), legs = trips[o].legs, l = legs[j], after = legs.slice(j + 1), ni = after.findIndex((x) => x.type === 'ride');
     await toggleWatch(rideWatch(l, ni < 0 ? null : after[ni], after.slice(0, Math.max(ni, 0)).reduce((n, x) => n + x.mins, 0)));
-    b.classList.toggle('on', watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })));
-    return void (b.innerHTML = rideLabel(l));
+    const k = rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip }), on = watching.has(k);
+    setRideEnd(k, on && l.arr);
+    if (on && navigator.wakeLock) toast(`Will tell you when ${l.alight.name} is next · screen stays on`);
+    b.classList.toggle('on', on);
+    b.innerHTML = rideLabel(l);
+    return void refreshRides();
   }
   if (b?.dataset.share) {
     const [o, j] = b.dataset.share.split(':').map(Number), l = trips[o].legs[j];
@@ -745,6 +846,44 @@ $('#trip').onclick = async (e) => {
   if (c) { c.classList.toggle('open'); c.querySelector('.summary').setAttribute('aria-expanded', c.classList.contains('open')); }
 };
 
+// ---------- riding ----------
+// While an "I'm on this bus" alert is on, the screen stays awake (Wake Lock, re-taken whenever the app comes back to the front) until a few
+// minutes after you get off, and the leg counts down the stops. rideEnds: ride key -> when you get off (per device, like the alerts).
+let rideEnds = store.get('rideEnds', {}), wakeLock = null, waking = false;
+const setRideEnd = (k, at) => {
+  const now = Date.now() / 1000;
+  rideEnds = Object.fromEntries(Object.entries(rideEnds).filter(([x, t]) => x !== k && t > now - 3600)); // old rides drop off
+  if (at) rideEnds[k] = at;
+  store.set('rideEnds', rideEnds); keepAwake();
+};
+const riding = () => Object.entries(rideEnds).some(([k, t]) => watching.has(k) && t > Date.now() / 1000 - 300);
+async function keepAwake() {
+  const want = riding() && !document.hidden;
+  if (want && !wakeLock && !waking && navigator.wakeLock) {
+    waking = true;
+    try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.onrelease = () => { wakeLock = null; }; } catch {}
+    waking = false;
+  } else if (!want && wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+// "4 stops to go · off at 5:12" on each ride leg you're on, from the bus's live position (else the timetable)
+async function refreshRides() {
+  await Promise.all($$('#trip [data-left]').map(async (el) => {
+    const [o, j] = el.dataset.left.split(':').map(Number), l = trips[o]?.legs[j], k = l && rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip });
+    if (!l || !watching.has(k)) return void (el.hidden = true);
+    let t; try { t = await api('/api/trip/' + encodeURIComponent(l.trip)); } catch { return; }
+    const now = Date.now() / 1000, off = t.stops[l.alight.idx];
+    if (!off) return;
+    const at = t.next === undefined ? t.stops.findIndex((x) => x.time > now - 30) : t.next ?? -1, next = at < 0 ? t.stops.length : at; // index of the first stop not yet passed
+    const togo = l.alight.idx - next + 1, wait = l.boardIdx - next, on = t.stops[l.boardIdx];
+    if (rideEnds[k]) { rideEnds[k] = off.time; store.set('rideEnds', rideEnds); } // the live time you get off moves the wake lock's end too
+    el.innerHTML = togo <= 0 ? `${icon('flag')} You've arrived at ${esc(l.alight.name)}`
+      : wait >= 0 && on && on.time > now - 30 ? `${icon('bus')} Your bus ${wait > 0 ? `is ${wait} stop${wait === 1 ? '' : 's'} from` : 'is coming to'} ${esc(l.board.name)} · ${etaText(on.time)}`
+      : `${icon(togo === 1 ? 'bell-ring' : 'signpost')} ${togo === 1 ? 'Your stop is next' : `${togo} stops to go`} · off at ${clock(off.time)}`;
+    el.hidden = false;
+  }));
+  keepAwake();
+}
+
 // One itinerary: leave -> arrive, route badges, and a timeline (clock time + stop at each boarding/alighting, a coloured rail per ride)
 function tripCard(r, i) {
   const open = i === 0, rides = r.legs.filter((l) => l.type === 'ride');
@@ -754,7 +893,7 @@ function tripCard(r, i) {
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
     : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
         <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small>
-          ${l.alight ? `<div class="rbtns"><button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button></div>` : ''}</div>
+          ${l.alight ? `<div class="left" data-left="${i}:${j}" role="status" hidden></div><div class="rbtns"><button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button></div>` : ''}</div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
   const first = rides[0], act = first && first.trip ? `<div class="btnrow"><button class="btn ${isStopPinned(first.board) ? 'on' : ''}" data-tpin="${i}">${tripPinLabel(first)}</button>
@@ -895,16 +1034,17 @@ $('#askform').onsubmit = (e) => { e.preventDefault(); const q = $('#ask').value;
 const daysAgo = (ms) => { const d = Math.floor((Date.now() - ms) / 864e5); return d < 1 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`; };
 async function openDevicesSheet() {
   const bar = '<div class="sheet-bar"><b>Signed-in devices</b><button data-close class="done">Done</button></div>';
-  const { el, close } = sheetShell(bar + '<div class="empty" style="padding:16px">Loading…</div>');
+  const { el, close } = sheetShell(bar + emptyMsg('Loading…'));
   let list = [];
   const draw = async () => {
-    try { list = (await api('/api/sessions')).sessions; } catch { return void (el.querySelector('.empty').textContent = 'Could not load devices.'); }
+    try { list = (await api('/api/sessions')).sessions; } catch { return void (el.innerHTML = bar + emptyMsg('Could not load devices.', true)); }
     el.innerHTML = `<div class="sheet-bar"><div><b>Signed-in devices</b><small>Sign one out if you lose it</small></div><button data-close class="done">Done</button></div>
       <div class="sheet-list">${list.map((s) => `<div class="sg"><span class="ico">${icon('smartphone')}</span><span class="t"><b>${esc(s.label)}${s.current ? '<span class="chip">This device</span>' : ''}</b><small>Signed in ${new Date(s.created).toLocaleDateString()} · active ${daysAgo(s.lastSeen)}</small></span>
         <button class="cbtn" data-revoke="${esc(s.id)}" aria-label="Sign out ${s.current ? 'this device' : esc(s.label)}">${icon('log-out')}</button></div>`).join('')}</div>`;
   };
   el.onclick = async (e) => {
     if (e.target.closest('[data-close]')) return close();
+    if (e.target.closest('[data-retry]')) { el.innerHTML = bar + emptyMsg('Loading…'); return draw(); }
     const b = e.target.closest('[data-revoke]'); if (!b) return;
     if (!b.dataset.sure) { b.dataset.sure = 1; b.classList.add('sure'); b.textContent = 'Sign out?'; return; } // a second tap confirms
     const me = list.find((s) => s.id === b.dataset.revoke)?.current;
@@ -931,7 +1071,7 @@ const busIcon = (b) => L.divIcon({
   className: '', iconSize: [52, 52], iconAnchor: [26, 26],
   html: `<div class="bus" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
 });
-const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
+const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.occ == null ? '' : ` · ${OCC[b.occ]}`}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
 
 function syncSeg() {
   $('.mapbar [data-mode=all]').textContent = shown ? 'My routes' : 'All';
@@ -941,8 +1081,7 @@ function initMap() {
   const CITY = L.latLngBounds([52.05, -106.80], [52.23, -106.50]); // the map can't be panned or zoomed out beyond Saskatoon
   // tapHold: Leaflet only synthesizes a long-press "contextmenu" when it sees Safari in the UA, which a Home Screen app doesn't
   // have, so turn it on for any iOS touch device (Android fires a native contextmenu itself, which would double up)
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Mac/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-  map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10, tapHold: ios }).setView([52.13, -106.65], 12);
+  map = L.map('mapbox', { preferCanvas: true, maxBounds: CITY, maxBoundsViscosity: 1, minZoom: 10, tapHold: IOS }).setView([52.13, -106.65], 12);
   const fitCity = () => map.setMinZoom(Math.max(10, map.getBoundsZoom(CITY))); // zoomed out just far enough to see the whole city
   fitCity(); window.addEventListener('resize', fitCity);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
@@ -1077,7 +1216,7 @@ async function refreshMap() {
       const hit = (await api('/api/suggest?kinds=stop&q=' + encodeURIComponent(p.id)).catch(() => [])).find((x) => x.id === p.id);
       if (hit) { p.lat = hit.lat; p.lon = hit.lon; store.set('pins', pins); }
     }
-    if (p.lat) L.marker([p.lat, p.lon], { icon: L.divIcon({ className: '', html: '<div class="stopdot"></div>', iconSize: [14, 14] }) }).bindPopup(esc(p.name)).addTo(stopLayer);
+    if (p.lat) L.marker([p.lat, p.lon], { icon: L.divIcon({ className: '', html: '<div class="stopdot"></div>', iconSize: [14, 14] }) }).bindPopup(esc(stopName(p))).addTo(stopLayer);
   }
   if (fitNext && show.length) { map.fitBounds(L.latLngBounds(show.map((b) => [b.lat, b.lon])).pad(0.25), { maxZoom: 15 }); fitNext = false; }
 }
@@ -1133,7 +1272,7 @@ function openQuietSheet() {
 
 async function refreshAlerts() {
   await loadAlerts();
-  if (!alertList) return ($('#alerts').innerHTML = '<div class="empty">Alerts need a connection.</div>');
+  if (!alertList) return ($('#alerts').innerHTML = emptyMsg('Alerts need a connection.', true));
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
   const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}</div>`;
@@ -1149,6 +1288,7 @@ $('#alerts').onclick = (e) => {
   if (e.target.closest('[data-editroutes]')) return openRoutesSheet();
   if (e.target.closest('[data-routealerts]')) return toggleRouteAlerts();
   if (e.target.closest('[data-quiet]')) return openQuietSheet();
+  if (e.target.closest('[data-retry]')) return refreshAlerts();
   const c = e.target.closest('.alert');
   if (c) c.setAttribute('aria-expanded', c.classList.toggle('open'));
 };
@@ -1171,7 +1311,7 @@ async function checkLive() {
 }
 
 // ---------- refreshing ----------
-const refreshAll = () => Promise.all([refreshPins().then(loadAlerts).then(checkLive), refreshNearby(), map && !$('#map').hidden && refreshMap()]);
+const refreshAll = () => Promise.all([refreshPins().then(loadAlerts).then(checkLive), refreshNearby(), map && !$('#map').hidden && refreshMap(), refreshRides()]);
 // Another device changed a synced setting: re-read them in place (no reload, so the tab, open sheets and the map stay put)
 function applySynced() {
   pins = store.get('pins', []); routePins = store.get('routePins', []); saved = store.get('saved', {}); commutes = store.get('commutes', []);
@@ -1209,7 +1349,7 @@ document.addEventListener('keydown', (e) => {
 if (pins.length || routePins.length) $('#pins').innerHTML = skeleton(Math.min(4, pins.length + routePins.length)); // until the first fetch lands
 const startTab = location.hash.slice(1);
 if (TABS.includes(startTab) && startTab !== 'pinned') showTab(startTab);
-refreshPins().then(loadAlerts).then(checkLive); refreshNearby();
+refreshPins().then(loadAlerts).then(checkLive); refreshNearby(); keepAwake();
 setInterval(refreshAll, 20000);
 syncNow(); setInterval(syncNow, 30000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncNow(); refreshAll(); } });

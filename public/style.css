@@ -246,7 +246,8 @@ header { align-items: center; }
 #snack { position: fixed; left: 50%; bottom: calc(68px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px); width: max-content; max-width: calc(100% - 32px); z-index: 3500;
   display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: 12px; background: #1f2328; color: #fff; font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.25);
   opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; }
-#snack.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+#snack.on { opacity: 1; transform: translate(-50%, 0); }
+#snack.on button { pointer-events: auto; } /* only Undo takes taps: the message never blocks what's under it (a sheet's rows or Save) */
 #snack button { border: 0; background: none; color: #6ee7a0; font-weight: 700; padding: 4px; }
 @media (prefers-color-scheme: dark) { #snack { background: #eceef0; color: #14171a; } #snack button { color: #0a7d3c; } }
 
@@ -384,3 +385,33 @@ header { align-items: center; }
 .chatbar { display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); flex: none; }
 .chatbar input { margin: 0; box-shadow: none; }
 .chatbar .send { flex: none; width: 48px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; }
+
+/* empty / loading / error lines in lists; errors get a Retry button */
+.empty.pad { padding: 14px; }
+.empty.intro { padding: 24px 4px; }
+.retry { display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; min-height: 36px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--accent); font-size: 14px; font-weight: 600; vertical-align: middle; }
+.retry .ic { width: 16px; height: 16px; }
+
+/* pinned stop name: tap for nickname + routes */
+.card h2 button.name { display: flex; align-items: center; gap: 6px; padding: 0; color: var(--fg); font-weight: inherit; font-size: inherit; text-align: left; justify-content: flex-start; }
+.card h2 button.name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card h2 button.name .ic { width: 14px; height: 14px; color: var(--muted); }
+
+/* how full the bus is */
+.occ { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); }
+.occ.roomy { color: var(--accent); }
+.occ.busy { color: var(--warn); font-weight: 600; }
+.occ .ic { width: 13px; height: 13px; }
+
+/* walk line on a stop card opens walking directions */
+a.catch { text-decoration: none; }
+.catch .go { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; color: var(--accent); font-weight: 600; }
+
+/* quick leave times */
+.opt.quick { margin-top: -2px; }
+.opt.quick button { padding: 6px 12px; border-radius: 999px; font-size: 13px; }
+
+/* riding: stops to go on the leg */
+.tb .left { flex-basis: 100%; display: flex; align-items: center; gap: 6px; color: var(--accent); font-weight: 700; font-size: 14px; }
+.tb .left[hidden] { display: none; }
+.tb .left .ic { width: 16px; height: 16px; }

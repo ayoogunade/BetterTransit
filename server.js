@@ -165,9 +165,11 @@ async function arrivals(id) {
 
 // What the realtime feeds say about every trip, rebuilt once per feed message:
 // tripId -> { cancelled, at: Map(stop index -> {time, skipped}), next: index of the first stop still ahead (null: trip finished), bus: a vehicle is on it,
-//   label: that vehicle's fleet number }
+//   label: that vehicle's fleet number, occ: how full it is (see occOf) }
 // plus the blocks that have a bus out right now (blockId -> start time of the trip that bus is running).
 const stateCache = new WeakMap();
+// GTFS-rt occupancy: 0 empty ... 6 not accepting passengers. 7 (no data) and 8 (not boardable) say nothing about room, so they're dropped.
+const occOf = (v) => (Object.hasOwn(v, 'occupancyStatus') && v.occupancyStatus <= 6 ? v.occupancyStatus : null);
 async function realtimeState() {
   const msg = await feed('TripUpdate/TripUpdates.pb'), vmsg = await feed('Vehicle/VehiclePositions.pb');
   const hit = stateCache.get(msg);
@@ -190,7 +192,7 @@ async function realtimeState() {
   for (const e of vmsg.entity) {
     const id = e.vehicle && e.vehicle.trip && e.vehicle.trip.tripId, t = trips[id];
     if (!t) continue;
-    if (byTrip.has(id)) Object.assign(byTrip.get(id), { bus: true, label: (e.vehicle.vehicle && e.vehicle.vehicle.label) || null });
+    if (byTrip.has(id)) Object.assign(byTrip.get(id), { bus: true, label: (e.vehicle.vehicle && e.vehicle.vehicle.label) || null, occ: occOf(e.vehicle) });
     const start = tripStops[id][0].t;
     if (t.block_id && !(blocks.get(t.block_id) <= start)) blocks.set(t.block_id, start);
   }
@@ -245,7 +247,7 @@ async function arrivalsAt(stopId) {
       lastGood.set(key, { time: p.time, seen: Date.now(), tracked });
       // stops away only once the bus has actually started this trip (it may be waiting at the first stop)
       const started = s.bus && (s.next > 0 || (s.at.get(0) || {}).time <= now);
-      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }), ...(s.label && { label: s.label }) });
+      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }), ...(s.label && { label: s.label }), ...(s.occ != null && { occ: s.occ }) });
       continue;
     }
     // the feed dropped the trip. Trips leave the feed when the bus reaches its last stop, so one that was due has arrived;
@@ -292,7 +294,7 @@ async function vehicles(routeFilter) {
       id, label: v.vehicle && v.vehicle.label, trip: v.trip && v.trip.tripId, lat: v.position.latitude, lon: v.position.longitude,
       age: Number(v.timestamp) ? Math.max(0, Math.round(Date.now() / 1000 - Number(v.timestamp))) : null, // seconds since the bus last reported
       bearing: lastBearing.has(id) ? lastBearing.get(id) : null,
-      route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign,
+      route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, occ: occOf(v),
       next: n && { stop: stopName(n.stop), time: n.time },
     });
   }
@@ -327,13 +329,14 @@ async function nearby(lat, lon, only = []) {
 }
 
 // Every stop of one trip with its (live-adjusted when available) time, so the app can show clock times and "+N min" offsets.
+// next: index of the first stop the bus hasn't passed (null: finished; absent: no live data), for "3 stops to go" while riding.
 async function tripTimeline(tripId) {
   const sts = tripStops[tripId], t = trips[tripId];
   if (!sts || !t) return null;
   const now = Math.floor(Date.now() / 1000), times = await liveTimes(), live = times.get(tripId), r = routes[t.route_id] || {};
   const rt = (await realtimeState()).byTrip.get(tripId);
   return {
-    trip: tripId, label: (rt && rt.label) || null, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
+    trip: tripId, label: (rt && rt.label) || null, occ: rt ? rt.occ ?? null : null, next: rt && rt.at.size ? rt.next : undefined, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
     stops: sts.map((st, i) => { const s = stopOf(st.stop); return { id: st.stop, name: s.stop_name, lat: +s.stop_lat || null, lon: +s.stop_lon || null, time: realTime(live ? live[i] : st.t, now) }; }), // lat/lon: "Show on map" draws the ride through them
   };
 }
