@@ -502,3 +502,15 @@ test('quiet hours: a quiet() getter that throws or returns junk never stops noti
     assert.strictEqual(sent.length, 1);
   }
 });
+
+test('a test notification goes straight to a valid subscription and rejects foreign endpoints', async () => {
+  sent.length = 0;
+  const push = createPush({ arrivals: async () => [], checkEveryMs: 1e9 });
+  const sub = { endpoint: 'https://web.push.apple.com/abc', keys: { p256dh: 'p', auth: 'a' } };
+  assert.strictEqual(await push.test(sub), null);
+  assert.strictEqual(sent.length, 1);
+  assert.strictEqual(sent[0].title, 'Test notification');
+  assert.strictEqual(await push.test({ ...sub, endpoint: 'https://evil.example/x' }), 'unknown push service');
+  assert.strictEqual(await push.test(undefined), 'bad subscription');
+  assert.strictEqual(sent.length, 1);
+});

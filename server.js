@@ -608,6 +608,7 @@ const server = http.createServer(async (req, res) => {
       push.watch(w);
       return json(res, { ok: true });
     }
+    if (p === '/api/push/test' && req.method === 'POST') { const err = await push.test((await body(req)).sub); return json(res, err ? { error: err } : { ok: true }, err ? 400 : 200); }
     if (p === '/api/push/unwatch' && req.method === 'POST') { push.unwatch(await body(req)); return json(res, { ok: true }); }
     if (p === '/api/sessions') return json(res, { enabled: auth.enabled, sessions: auth.list(req) });
     if (p === '/api/sessions/revoke' && req.method === 'POST') { const { id } = await body(req), ok = auth.revoke(id); if (ok) push.dropSession(id); return json(res, { ok }); }

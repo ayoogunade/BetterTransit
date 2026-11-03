@@ -1275,7 +1275,7 @@ async function refreshAlerts() {
   if (!alertList) return ($('#alerts').innerHTML = emptyMsg('Alerts need a connection.', true));
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
-  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}</div>`;
+  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}<div class="sg" role="button" tabindex="0" data-testpush><span class="ico">${icon('bell-ring')}</span><span class="t"><b>Send a test notification</b><small>Check that notifications reach this device</small></span></div></div>`;
   $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => `<div class="card alert" role="button" tabindex="0" aria-expanded="false">
     <h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${seenAlerts.has(alertKey(x)) ? '' : '<span class="chip new">New</span>'}${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
     <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
@@ -1288,10 +1288,21 @@ $('#alerts').onclick = (e) => {
   if (e.target.closest('[data-editroutes]')) return openRoutesSheet();
   if (e.target.closest('[data-routealerts]')) return toggleRouteAlerts();
   if (e.target.closest('[data-quiet]')) return openQuietSheet();
+  if (e.target.closest('[data-testpush]')) return testPush();
   if (e.target.closest('[data-retry]')) return refreshAlerts();
   const c = e.target.closest('.alert');
   if (c) c.setAttribute('aria-expanded', c.classList.toggle('open'));
 };
+
+async function testPush() {
+  let sub;
+  try { sub = await getSub(true); } catch (err) { return pushFail(err); }
+  if (!sub) return;
+  try {
+    const r = await post('/api/push/test', { sub }).then((x) => x.json());
+    toast(r.ok ? 'Test notification sent' : r.error === 'subscription expired' ? 'Notifications expired here: turn an alert off and on' : 'Could not send a test notification');
+  } catch { toast('Could not send a test notification'); }
+}
 
 async function toggleRouteAlerts() {
   routeAlerts = !routeAlerts;

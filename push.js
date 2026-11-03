@@ -31,13 +31,20 @@ const quietAt = (q, now, tz) => {
 };
 const point = (p) => !!p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
 
-// A reason this watch request is unacceptable, or null. Checked by the server before watch().
-function invalid(w) {
+// A reason this push subscription is unacceptable, or null.
+function badSub(sub) {
   try {
-    const u = new URL(w.sub.endpoint);
+    const u = new URL(sub.endpoint);
     if (u.protocol !== 'https:' || !PUSH_HOSTS.some((h) => u.hostname === h || u.hostname.endsWith('.' + h))) return 'unknown push service';
   } catch { return 'bad subscription'; }
-  if (!w.sub.keys || typeof w.sub.keys.p256dh !== 'string' || typeof w.sub.keys.auth !== 'string') return 'bad subscription';
+  if (!sub.keys || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') return 'bad subscription';
+  return null;
+}
+
+// A reason this watch request is unacceptable, or null. Checked by the server before watch().
+function invalid(w) {
+  const bad = badSub(w && w.sub);
+  if (bad) return bad;
   if (!w.alerts && !int(w.minutes, 1, 120)) return 'bad minutes';
   if (w.alerts) {
     const strs = (a) => Array.isArray(a) && a.length <= 300 && a.every((x) => typeof x === 'string' && x.length < 40);
@@ -197,6 +204,13 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
     unwatch(w) { watches = watches.filter((x) => !same(x, w)); save(WATCHES, watches); },
     dropSession(sid) { watches = watches.filter((x) => !sid || x.sid !== sid); save(WATCHES, watches); }, // a signed-out device stops getting pushes
     has: (w) => watches.some((x) => same(x, w)),
+    // Settings' "Send a test notification": one push straight to this device, ignoring quiet hours. Returns an error string or null.
+    async test(sub) {
+      const bad = badSub(sub);
+      if (bad) return bad;
+      try { await webpush.sendNotification(sub, JSON.stringify({ title: 'Test notification', body: 'Notifications are working on this device' })); return null; }
+      catch (e) { console.error('test push failed', e.statusCode || e.message); return [404, 410].includes(e.statusCode) ? 'subscription expired' : 'push service refused'; }
+    },
     invalid,
     check,
   };
