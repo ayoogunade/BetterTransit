@@ -60,7 +60,7 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
   let keys = loadJson(KEYS, null);
   if (!keys) save(KEYS, (keys = webpush.generateVAPIDKeys()));
   // Apple's push service rejects a made-up contact like mailto:local@localhost (403 BadJwtToken), so use a real URL
-  webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://34-46-182-45.sslip.io', keys.publicKey, keys.privateKey);
+  webpush.setVapidDetails(process.env.PUSH_SUBJECT || 'https://github.com/ayoogunade/BetterTransit', keys.publicKey, keys.privateKey);
 
   let watches = loadJson(WATCHES, []); // {sub, stopId, tripId, minutes, route, headsign, stopName} or {sub, stopId, standing, routes, minutes, stopName, sent}
   const same = (a, b) => a.sub.endpoint === b.sub.endpoint && (a.alightStopId || a.stopId) === (b.alightStopId || b.stopId) && !!a.ride === !!b.ride && !!a.alerts === !!b.alerts && a.tripId === b.tripId && a.commuteId === b.commuteId;

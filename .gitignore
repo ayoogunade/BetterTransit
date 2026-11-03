@@ -1,3 +1,6 @@
 node_modules/
 data/
 .playwright-mcp/
+.env
+deploy.env
+DEPLOY.local.md

@@ -27,17 +27,22 @@ Feeds: https://saskatoontransit.ca/node/562
 
 ## Deployed (GCP free-tier VM)
 
-Runs 24/7 on `ayo-vm-instance` (e2-micro, us-central1-c, project `project-63c42225-37ba-43f1-893`) as the `bettertransit` systemd service
-behind Caddy (automatic HTTPS): **https://34-46-182-45.sslip.io**. The app has its own login page (`auth.js`): it checks the password against the bcrypt
-hash in `LOGIN_HASH` (in `/etc/bettertransit.env`; make one with `caddy hash-password`) and sets a 400-day cookie. Not Caddy Basic Auth: iOS Home Screen
-apps forget Basic Auth between launches and show a white screen. Changing the hash signs every device out. Locally `LOGIN_HASH` is unset, so there's no login.
-Static IP `ayo-vm-ip` reserved; firewall rule `allow-web-80-443` (VM tag `web`); budget alert at CAD 5.
+Runs 24/7 on a GCP e2-micro VM as the `bettertransit` systemd service behind Caddy (automatic HTTPS). The app has its own login page (`auth.js`):
+it checks the password against the bcrypt hash in `LOGIN_HASH` (in `/etc/bettertransit.env`; make one with `caddy hash-password`) and sets a 400-day
+cookie. Not Caddy Basic Auth: iOS Home Screen apps forget Basic Auth between launches and show a white screen. Changing the hash signs every device out.
+Locally `LOGIN_HASH` is unset, so there's no login. Set `PUSH_SUBJECT` to the app's public URL there too (Apple's push service wants a real contact).
+
+The deploy target lives in `deploy.env` (gitignored), which `deploy.sh` reads:
+
+    P=<gcp-project-id>
+    Z=<zone>
+    VM=<user>@<vm-name>
 
     ./deploy.sh                                   # ship local code + restart
-    gcloud compute ssh ayo-vm-instance --zone=us-central1-c --project=project-63c42225-37ba-43f1-893
+    gcloud compute ssh <vm-name> --zone=<zone> --project=<gcp-project-id>
     journalctl -u bettertransit -f                # on the VM: logs
 
-Push subscriptions and VAPID keys live in `~/bettertransit/data/` on the VM (separate from local ones). The VM is memory-tight (1 GB, ~0.5 GB swap in use).
+Push subscriptions and VAPID keys live in `~/bettertransit/data/` on the VM (separate from local ones). The VM is memory-tight (1 GB).
 
 ## Address search (Google Places)
 
