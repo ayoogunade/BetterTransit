@@ -1,7 +1,7 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 // Settings in SYNCED are mirrored to the server (last write wins per key) so every device sees the same pins and saved places.
-const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts', 'quietHours'];
+const SYNCED = ['pins', 'routePins', 'saved', 'recents', 'recentTrips', 'shownRoutes', 'stopAlerts', 'stopSort', 'seenAlerts', 'commutes', 'accessible', 'routeAlerts', 'quietHours'];
 const stamps = (() => { try { return JSON.parse(localStorage.getItem('sync:t')) || {}; } catch { return {}; } })();
 SYNCED.forEach((k) => { if (!stamps[k] && localStorage.getItem(k) !== null) stamps[k] = Date.now(); }); // pre-sync data counts as a change so it uploads once
 const store = {
@@ -28,7 +28,13 @@ async function syncNow() {
   } catch {} finally { syncing = false; }
 }
 const signedOut = (r) => { if (r.status === 401) location.href = '/login'; return r; }; // the server's sign-in cookie is gone
-const api = (p) => fetch(p).then(signedOut).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+// cachedAt: set when the service worker answered from its offline cache (x-cached), to when that copy was fetched (oldest wins)
+let cachedAt = 0;
+const api = (p) => fetch(p).then(signedOut).then((r) => {
+  if (!r.ok) throw new Error(r.status);
+  if (r.headers.get('x-cached')) { const t = Date.parse(r.headers.get('date')) / 1000 || 1; cachedAt = cachedAt ? Math.min(cachedAt, t) : t; }
+  return r.json();
+});
 const post = (p, body) => fetch(p, { method: 'POST', body: JSON.stringify(body) }).then(signedOut);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (s) => parseInt(s, 10);
@@ -69,8 +75,10 @@ function tick() {
   $$('[data-eta]').forEach((el) => { const t = +el.dataset.eta; el.querySelector('.n').textContent = etaText(t); el.classList.toggle('soon', t - now < 180); });
   $$('[data-leavein]').forEach((el) => (el.textContent = leaveText(+el.dataset.leavein)));
   const s = Math.round(now - updatedAt), u = $('#updated');
-  u.textContent = offline ? 'Offline' + (updatedAt ? ' · ' + ago(s) : '') : updatedAt ? 'Updated ' + ago(s) : '';
+  const stale = !!updatedAt && (offline || s > 60); // countdowns are fading guesses: dim them and say when they're from
+  u.textContent = offline ? 'Offline' + (updatedAt ? ' · as of ' + clock(updatedAt) : '') : stale ? 'As of ' + clock(updatedAt) : updatedAt ? 'Updated ' + ago(s) : '';
   u.classList.toggle('stale', offline || s > 60);
+  document.body.classList.toggle('stale', stale);
 }
 setInterval(tick, 5000);
 const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error('timeout')), ms))]);
@@ -98,7 +106,7 @@ function showTab(t) {
 $$('.tabs button').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
 
 // ---------- search box (shared by Pinned and Plan) ----------
-const KIND_ICON = { route: () => icon('bus'), stop: () => icon('signpost'), dest: () => icon('flag'), place: () => icon('map-pin'), here: () => icon('crosshair'), recent: () => icon('history') };
+const KIND_ICON = { route: () => icon('bus'), stop: () => icon('signpost'), dest: () => icon('flag'), place: () => icon('map-pin'), here: () => icon('crosshair'), recent: () => icon('history'), trip: () => icon('route') };
 const titleOf = (it) => (it.kind === 'route' ? `Route ${it.short}` : it.kind === 'here' ? 'Use my location' : it.name);
 const subOf = (it) => (it.kind === 'route' ? it.long : it.sub);
 
@@ -427,7 +435,7 @@ function stopCard(p, list, nearby = false) {
   // a pinned stop's name opens its settings (nickname, routes); the icon after it says which you can do / have done
   const title = nearby ? `<span class="name">${esc(name)}</span>`
     : `<button class="name" data-edit="${esc(p.id)}" aria-label="Edit ${esc(name)}: nickname and routes"><span>${esc(name)}</span>${icon(own ? 'funnel' : 'pencil')}</button>`;
-  return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2>${title}${act}</h2>${catchLine(p, list, dist)}${rows}</div>`;
+  return `<div class="card ${openStops.has(p.id) ? 'open' : ''}"><h2>${title}${act}</h2>${alertChip(stopAlertsOn(p, list))}${catchLine(p, list, dist)}${rows}</div>`;
 }
 
 function routeCard(r, buses) {
@@ -447,25 +455,28 @@ function routeCard(r, buses) {
     }).join('')).join('') : '<div class="empty">No buses in service right now</div>';
   return `<div class="card"><h2>${badge(r.short, r.color)}<span class="name">${esc(r.long)}</span>
     <button data-maproute="${esc(r.short)}" aria-label="Show on map">${icon('map')}</button><button data-unroute="${esc(r.short)}" aria-label="Unpin">${icon('x')}</button></h2>
-    ${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">${icon('plus')} Pin stops on this route</button></div></div>`;
+    ${alertChip((alertList || []).filter((x) => x.routes.includes(r.short)))}${body}<div class="btnrow"><button class="btn" data-addstop="${esc(r.short)}">${icon('plus')} Pin stops on this route</button></div></div>`;
 }
 
-// Pinned stops can be shown in your own order (arrows in reorder mode), by next bus, or by name.
+// Pinned stops can be shown in your own order (drag or arrows in reorder mode), by next bus, or by name.
 // Both the sort choice and "My order" (the pins list itself) sync between devices.
 let pinLists = new Map(), pinBuses = [], reordering = false, stopSort = store.get('stopSort', 'mine');
 const SORTS = { mine: 'My order', next: 'Next bus', name: 'Name' };
 const nextTime = (p) => { const a = (pinLists.get(p.id) || []).find((x) => atStop(p.id, x.route) && canBoard(x) && x.time > Date.now() / 1000 - 30); return a ? a.time : Infinity; }; // ignore buses already gone
 const sortedPins = () => (stopSort === 'next' ? [...pins].sort((a, b) => nextTime(a) - nextTime(b)) : stopSort === 'name' ? [...pins].sort((a, b) => stopName(a).localeCompare(stopName(b))) : pins);
 const stopsHeader = () => `<div class="section-title sorthead"><span>Stops</span>${pins.length > 1 ? `<span class="sortbox">${stopSort === 'mine' ? `<button data-reorder class="${reordering ? 'on' : ''}" aria-label="Reorder stops">${icon('arrow-up-down')}</button>` : ''}<select id="stopsort" aria-label="Sort stops">${Object.entries(SORTS).map(([k, v]) => `<option value="${k}" ${k === stopSort ? 'selected' : ''}>${v}</option>`).join('')}</select></span>` : ''}</div>`;
-const reorderList = () => `<div class="card">${pins.map((p, i) => `<div class="sg reorder"><span class="t"><b>${esc(stopName(p))}</b></span>
+const reorderList = () => `<div class="card reorders">${pins.map((p, i) => `<div class="sg reorder" data-row="${i}"><span class="grip" data-grip="${i}" aria-hidden="true">${icon('grip-vertical')}</span><span class="t"><b>${esc(stopName(p))}</b></span>
   <button data-move="${i}" data-dir="-1" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>${icon('chevron-up')}</button><button data-move="${i}" data-dir="1" aria-label="Move down" ${i === pins.length - 1 ? 'disabled' : ''}>${icon('chevron-down')}</button></div>`).join('')}</div>`;
 
+let dragging = false; // a reorder drag is under way: the 20s refresh must not rebuild the list under your finger
 function renderPins() {
+  if (dragging) return;
   $('#pins').innerHTML = (shown ? filterBar() : '') + ((pins.length ? stopsHeader() + (reordering && stopSort === 'mine' ? reorderList() : sortedPins().map((p) => stopCard(p, pinLists.get(p.id) || [])).join('')) : '')
     + (routePins.length ? '<div class="section-title">Routes</div>' + routePins.map((r) => routeCard(r, pinBuses)).join('') : '')
     || '<div class="empty intro">Search a route (like <b>60</b>) or a stop, then tap to pin it ' + icon('pin') + '</div>');
 }
 async function refreshPins() {
+  cachedAt = 0;
   try {
     const [lists, buses] = await Promise.all([
       Promise.all(pins.map((p) => api('/api/arrivals/' + encodeURIComponent(p.id)))),
@@ -473,9 +484,10 @@ async function refreshPins() {
     ]);
     pinRoutes = new Set([...lists.flat().map((a) => a.route), ...routePins.map((r) => r.short)]);
     syncRouteAlerts(); // no-op unless the routes or stops changed
-    pinLists = new Map(pins.map((p, i) => [p.id, lists[i]])); pinBuses = buses;
+    const old = cachedAt, now = Date.now() / 1000; // the service worker's offline copy: say how old it is, and drop buses long gone
+    pinLists = new Map(pins.map((p, i) => [p.id, old ? lists[i].filter((a) => a.time > now - 60) : lists[i]])); pinBuses = buses;
+    updatedAt = old || now; offline = !!old;
     renderPins();
-    updatedAt = Date.now() / 1000; offline = false;
   } catch { offline = true; if (!updatedAt) renderPins(); } // never fetched: drop the loading placeholders
   tick();
 }
@@ -651,6 +663,7 @@ function openStopEditSheet(id) {
 $('#pins').onclick = $('#nearby').onclick = (e) => {
   const t = e.target.closest('button');
   if (!t) { const row = e.target.closest('[data-open]'); return row && openTripSheet(row.dataset.open, row.dataset.stop); }
+  if (t.dataset.showalerts) return openAlertsSheet(t.dataset.showalerts.split(','));
   if (t.dataset.tt) return openTimetableSheet({ id: t.dataset.tt, name: t.dataset.name });
   if (t.dataset.edit) return openStopEditSheet(t.dataset.edit);
   if (t.dataset.editroutes !== undefined) return openRoutesSheet();
@@ -685,6 +698,27 @@ $('#pins').onclick = $('#nearby').onclick = (e) => {
   }
 };
 
+// Reorder mode: drag a row by its grip (the arrows stay for one step at a time and for the keyboard)
+$('#pins').addEventListener('pointerdown', (e) => {
+  const grip = e.target.closest('[data-grip]'); if (!grip) return;
+  e.preventDefault();
+  const row = grip.closest('.sg'), rows = $$('.reorders .sg', $('#pins')), from = +grip.dataset.grip, h = row.offsetHeight, y0 = e.clientY;
+  let to = from;
+  dragging = true; row.classList.add('dragging'); row.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    const dy = ev.clientY - y0;
+    to = Math.max(0, Math.min(rows.length - 1, from + Math.round(dy / h)));
+    row.style.transform = `translateY(${dy}px)`;
+    rows.forEach((r, k) => { if (r !== row) r.style.transform = k > from && k <= to ? `translateY(${-h}px)` : k < from && k >= to ? `translateY(${h}px)` : ''; });
+  };
+  const end = () => {
+    row.removeEventListener('pointermove', move); row.removeEventListener('pointerup', end); row.removeEventListener('pointercancel', end);
+    dragging = false;
+    if (to !== from) { const [p] = pins.splice(from, 1); pins.splice(to, 0, p); store.set('pins', pins); }
+    renderPins();
+  };
+  row.addEventListener('pointermove', move); row.addEventListener('pointerup', end); row.addEventListener('pointercancel', end);
+});
 $('#pins').onchange = (e) => {
   if (e.target.id === 'stopsort') { stopSort = e.target.value; store.set('stopSort', stopSort); reordering = false; renderPins(); }
 };
@@ -728,11 +762,27 @@ $('#places').onclick = (e) => {
 renderPlaces();
 const recents = () => store.get('recents', []);
 const remember = (p) => store.set('recents', [p, ...recents().filter((r) => !(r.name === p.name && r.sub === p.sub))].slice(0, 6));
+// Whole trips (From and To) you planned, offered first in an empty From/To box: one tap fills both and plans again.
+// "My location" is kept as here: true, so it re-locates you instead of reusing an old spot.
+const recentTrips = () => store.get('recentTrips', []);
+const tripName = (t) => `${t.from.name} → ${t.to.name}`;
+function rememberTrip() {
+  const end = (k) => { const name = $('#' + k).value; return name === 'My location' ? { name, here: true } : { name, lat: place[k].lat, lon: place[k].lon }; };
+  const t = { from: end('from'), to: end('to') };
+  if (t.from.name === t.to.name) return;
+  store.set('recentTrips', [t, ...recentTrips().filter((x) => tripName(x) !== tripName(t))].slice(0, 4));
+}
 
 function planBox(key) {
   const input = $('#' + key);
   async function choose(it, ctx) {
     try {
+      if (it.kind === 'trip') { // a recent trip: fill both ends
+        const from = it.from.here ? { ...(await here()), name: 'My location' } : it.from;
+        place.from = { lat: from.lat, lon: from.lon }; place.to = { lat: it.to.lat, lon: it.to.lon };
+        $('#from').value = from.name; $('#to').value = it.to.name;
+        ctx.close(); return planTrip();
+      }
       const p = it.kind === 'here' ? { ...(await here()), name: 'My location' } : await ctx.coords(it);
       if (key === 'to' && pendingSlot) { // this pick is being saved as Home/Work
         const k = pendingSlot; pendingSlot = null; input.placeholder = TO_HINT;
@@ -749,7 +799,7 @@ function planBox(key) {
   }
   searchBox({
     input, box: $('#' + key + '-suggest'), kinds: 'route,stop,dest,place',
-    empty: () => [{ kind: 'here' }, ...recents().map((r) => ({ ...r, kind: 'recent' }))],
+    empty: () => [{ kind: 'here' }, ...(key === 'to' && pendingSlot ? [] : recentTrips().slice(0, 3).map((t) => ({ ...t, kind: 'trip', name: tripName(t), sub: 'Recent trip' }))), ...recents().map((r) => ({ ...r, kind: 'recent' }))],
     onPick: (it, ctx) => (it.kind === 'route' ? ctx.drill(it, (s) => choose(s, ctx)) : choose(it, ctx)),
   });
   input.addEventListener('input', () => (place[key] = null));
@@ -798,7 +848,7 @@ async function planTrip() {
   try { [r, wx] = await Promise.all([api(`/api/plan?from=${place.from.lat},${place.from.lon}&to=${place.to.lat},${place.to.lon}&${leaveMode === 'arrive' ? 'arrive' : 'depart'}=${t}${accessible ? '&accessible=1' : ''}`), api('/api/weather').catch(() => null)]); }
   catch { return ($('#trip').innerHTML = emptyMsg('Planning needs a connection.', true)); }
   if (!r || !r.length) return ($('#trip').innerHTML = leaveMode === 'arrive' && t ? emptyMsg(`Nothing gets there by ${clock(t)}.`) + `<div class="btnrow"><button class="btn" data-later>${icon('clock-plus')} Arrive 30 min later</button></div>` : emptyMsg('No route found. Try a different time or place.'));
-  trips = r; planEnds = { from: place.from, to: place.to }; // what "Show on map" draws walks to (place can change before the next plan)
+  trips = r; planEnds = { from: place.from, to: place.to }; rememberTrip(); // what "Show on map" draws walks to (place can change before the next plan)
   $('#trip').innerHTML = (wx && wx.cold ? `<div class="wx">${icon('snowflake')} ${wx.temp}°F feels like ${wx.feels}°F · fewer walks, less waiting outside</div>` : '') + r.map((o, i) => tripCard(o, i)).join('')
     + `<div class="btnrow">${canEarlier() ? `<button class="btn" data-shift="-1">${icon('chevron-left')} Earlier</button>` : ''}<button class="btn" data-shift="1">Later ${icon('chevron-right')}</button></div>`
     + `<div class="btnrow"><button class="btn" data-savecommute>${icon('route')} Alert me when to leave for this trip</button></div>`;
@@ -1231,12 +1281,40 @@ async function refreshMap() {
 let alertList = null, seenAlerts = new Set(store.get('seenAlerts', []));
 const yours = (x) => x.routes.some((r) => pinRoutes.has(r));
 const alertKey = (x) => `${x.start}|${x.header}`;
+const alertCard = (x, open = false) => `<div class="card alert ${open ? 'open' : ''}" role="button" tabindex="0" aria-expanded="${open}">
+    <h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${seenAlerts.has(alertKey(x)) ? '' : '<span class="chip new">New</span>'}${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
+    <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
+    <p class="peek">${esc((x.description || '').replace(/\s+/g, ' '))}</p><p class="desc">${esc(x.description).replace(/\r?\n/g, '<br>')}</p><span class="readmore">${icon('chevron-down')}</span></div>`;
+// Alerts that touch a stop card: ones naming the stop, or a route the card shows
+function stopAlertsOn(p, list) {
+  const rs = new Set([...list.map((a) => a.route), ...(pinOf(p.id)?.routes || [])].filter((r) => atStop(p.id, r)));
+  return (alertList || []).filter((x) => x.stops.includes(p.id) || x.routes.some((r) => rs.has(r)));
+}
+// A warning line under a card's title; tap to read the alerts behind it
+const alertChip = (list) => (!list.length ? '' : `<button class="alertchip" data-showalerts="${esc(list.map((x) => x.id).join(','))}">${icon('triangle-alert')}<span>${list.length === 1 ? esc(list[0].header || 'Service alert') : `${list.length} service alerts`}</span>${icon('chevron-right')}</button>`);
+function openAlertsSheet(ids) {
+  const list = (alertList || []).filter((x) => ids.includes(x.id));
+  const { el, close } = sheetShell(`<div class="sheet-bar"><b>Service alert${list.length === 1 ? '' : 's'}</b><button data-close class="done">Done</button></div>
+    <div class="sheet-list alertlist">${list.map((x) => alertCard(x, true)).join('') || emptyMsg('This alert has ended.')}</div>`, { mini: true });
+  el.onclick = (e) => { if (e.target.closest('[data-close]')) return close(); const c = e.target.closest('.alert'); if (c) c.setAttribute('aria-expanded', c.classList.toggle('open')); };
+  list.forEach((x) => seenAlerts.add(alertKey(x))); store.set('seenAlerts', [...seenAlerts]); loadAlerts();
+}
 const filterBar = (extra = '') => `<div class="filterbar">${icon('sliders-horizontal')}<span>${shown ? `${shown.length} route${shown.length === 1 ? '' : 's'} shown${extra}` : 'Showing all routes'}</span><button data-editroutes>${shown ? 'Edit' : 'Customize'}</button></div>`;
+let alertSig = '';
 async function loadAlerts() {
   try { alertList = await api('/api/alerts'); } catch {}
+  const sig = (alertList || []).map((x) => x.id).join();
+  if (sig !== alertSig) { alertSig = sig; if (updatedAt) renderPins(); if (nearbyData) renderNearby(); } // cards show a chip for the alerts on them
   const n = (alertList || []).filter((x) => yours(x) && x.routes.some(routeOn) && !seenAlerts.has(alertKey(x))).length;
   $('#alert-badge').textContent = n || '';
+  setIconBadge(n);
   $('[data-tab=alerts]').setAttribute('aria-label', n ? `Alerts, ${n} new on your routes` : 'Alerts');
+}
+// The Home Screen icon shows the same count. The service worker adds one per alert push while the app is closed, so it keeps the count too.
+function setIconBadge(n) {
+  if (!('setAppBadge' in navigator)) return;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+  caches?.open('meta').then((c) => c.put('/badge', new Response(String(n)))).catch(() => {});
 }
 // Quiet hours: one window on every device. Inside it, stop and service-alert pushes wait (or are dropped); rides, commutes and one-off bells still come through.
 const loadQuiet = () => store.get('quietHours', null) || { on: false, startMin: 1320, endMin: 420, days: [0, 1, 2, 3, 4, 5, 6] }; // default 10 PM to 7 AM
@@ -1280,10 +1358,7 @@ async function refreshAlerts() {
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
   const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}<div class="sg" role="button" tabindex="0" data-testpush><span class="ico">${icon('bell-ring')}</span><span class="t"><b>Send a test notification</b><small>Check that notifications reach this device</small></span></div></div>`;
-  $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => `<div class="card alert" role="button" tabindex="0" aria-expanded="false">
-    <h2><span class="name" style="white-space:normal">${esc(x.header || 'Alert')}</span>${seenAlerts.has(alertKey(x)) ? '' : '<span class="chip new">New</span>'}${yours(x) ? '<span class="chip">Your route</span>' : ''}</h2>
-    <div class="sched">Since ${new Date(x.start * 1000).toLocaleDateString()}${x.routes.length ? ' · Routes ' + esc([...new Set(x.routes)].join(', ')) : ''}</div>
-    <p class="peek">${esc((x.description || '').replace(/\s+/g, ' '))}</p><p class="desc">${esc(x.description).replace(/\r?\n/g, '<br>')}</p><span class="readmore">${icon('chevron-down')}</span></div>`).join('') : `<div class="empty">No active alerts${hidden ? ' for your routes' : ''}.</div>`);
+  $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => alertCard(x)).join('') : `<div class="empty">No active alerts${hidden ? ' for your routes' : ''}.</div>`);
   seenAlerts = new Set(alertList.map(alertKey)); // everything listed now counts as seen (and old keys drop off)
   store.set('seenAlerts', [...seenAlerts]);
   loadAlerts();

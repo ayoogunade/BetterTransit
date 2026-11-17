@@ -7,7 +7,7 @@ const good = (r) => r.ok && !r.redirected;
 const put = (store, req, r) => { if (good(r)) { const copy = r.clone(); caches.open(store).then((c) => c.put(req, copy)); } return r; };
 self.addEventListener('install', (e) => e.waitUntil(Promise.all(FILES.map((f) => fetch(f).then((r) => put(SHELL, f, r)).catch(() => {}))).then(() => self.skipWaiting())));
 // drop the caches of older versions
-self.addEventListener('activate', (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL && k !== 'api').map((k) => caches.delete(k)))).then(() => clients.claim())));
+self.addEventListener('activate', (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== SHELL && k !== 'api' && k !== 'meta').map((k) => caches.delete(k)))).then(() => clients.claim())));
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
@@ -23,13 +23,25 @@ self.addEventListener('fetch', (e) => {
   if (e.request.mode === 'navigate' && navigator.onLine) return;
   const isApi = url.pathname.startsWith('/api/');
   // Network first for everything (always fresh when online); the cache is only the offline fallback.
+  // A cached API answer says so (x-cached; its Date header is when it was fetched), so the app shows its age instead of "Updated just now".
   const store = isApi ? 'api' : SHELL;
-  e.respondWith(fetch(e.request).then((r) => put(store, e.request, r)).catch(() => caches.match(e.request)));
+  const tag = (hit) => { if (!hit || !isApi) return hit; const h = new Headers(hit.headers); h.set('x-cached', '1'); return new Response(hit.body, { status: hit.status, headers: h }); };
+  e.respondWith(fetch(e.request).then((r) => put(store, e.request, r)).catch(() => caches.match(e.request).then(tag)));
 });
 
+// A service-alert push adds one to the Home Screen icon's count (the app stores the count in the 'meta' cache and resets it when it loads alerts)
+const bumpBadge = async () => {
+  if (!self.navigator.setAppBadge) return;
+  const c = await caches.open('meta'), n = (parseInt(await (await c.match('/badge'))?.text(), 10) || 0) + 1;
+  await c.put('/badge', new Response(String(n)));
+  await self.navigator.setAppBadge(n);
+};
 self.addEventListener('push', (e) => {
   const d = e.data ? e.data.json() : { title: 'Bus arriving', body: '' };
-  e.waitUntil(self.registration.showNotification(d.title, { body: d.body, icon: '/icon-192.png', badge: '/icon-192.png', tag: d.title }));
+  e.waitUntil(Promise.all([
+    self.registration.showNotification(d.title, { body: d.body, icon: '/icon-192.png', badge: '/icon-192.png', tag: d.title }),
+    d.title.startsWith('Alert:') ? bumpBadge().catch(() => {}) : null,
+  ]));
 });
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
