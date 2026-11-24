@@ -17,7 +17,7 @@ Module._load = realLoad;
 const now = () => Date.now() / 1000;
 const w = (extra = {}) => ({ sub: { endpoint: 'e1' }, stopId: 'S', tripId: 'T', minutes: 5, route: '17', headsign: 'Stonebridge', stopName: 'Clarence', ...extra });
 
-test('notifies once when the bus comes within the window, then drops the watch', async () => {
+test('counts down: once inside the window, again at 3 min and when due, all as one replacing notification, then drops the watch', async () => {
   sent.length = 0;
   let eta = now() + 600;
   const push = createPush({ arrivals: async () => [{ trip: 'T', time: eta, live: true }], checkEveryMs: 1e9 });
@@ -28,10 +28,34 @@ test('notifies once when the bus comes within the window, then drops the watch',
   eta = now() + 240;
   await push.check();
   assert.strictEqual(sent.length, 1);
-  assert.match(sent[0].title, /Route 17 in [34] min/);
+  assert.match(sent[0].title, /Route 17 in 4 min/);
+  await push.check();
+  assert.strictEqual(sent.length, 1); // still 4 min: nothing new to say
+  eta = now() + 170;
+  await push.check();
+  assert.match(sent[1].title, /Route 17 in 3 min/);
+  eta = now() + 20;
+  await push.check();
+  assert.strictEqual(sent.length, 3);
+  assert.match(sent[2].title, /Route 17 is due/);
+  assert.ok(sent.every((x) => x.tag === 'bus|S|T'));
+  assert.ok(!push.has(w()));
+});
+
+test('a bell set with a short lead goes straight to the right step and never repeats one', async () => {
+  sent.length = 0;
+  let eta = now() + 100;
+  const push = createPush({ arrivals: async () => [{ trip: 'T', time: eta, live: true }], checkEveryMs: 1e9 });
+  push.watch(w({ minutes: 2 }));
+  await push.check();
+  assert.match(sent[0].title, /in 2 min/);
+  eta = now() + 130; // the bus slipped back a little
   await push.check();
   assert.strictEqual(sent.length, 1);
-  assert.ok(!push.has(w()));
+  eta = now() + 30;
+  await push.check();
+  assert.strictEqual(sent.length, 2);
+  assert.ok(!push.has(w({ minutes: 2 })));
 });
 
 test('unwatch cancels, and a trip missing from the feed is kept briefly then dropped', async () => {

@@ -1,6 +1,6 @@
 // The app's own files are served from the cache (refreshed in the background), so a relaunch paints at once instead of
 // waiting on the network. API responses always go to the network; the cache is only their offline fallback.
-const SHELL = 'shell-v10';
+const SHELL = 'shell-v11';
 const FILES = ['/', '/app.js', '/icons-data.js', '/style.css', '/manifest.json', '/favicon.svg', '/vendor/leaflet.js', '/vendor/leaflet.css'];
 // a redirected response is the login page standing in for a signed-out request: never cache it as the app
 const good = (r) => r.ok && !r.redirected;
@@ -39,7 +39,7 @@ const bumpBadge = async () => {
 self.addEventListener('push', (e) => {
   const d = e.data ? e.data.json() : { title: 'Bus arriving', body: '' };
   e.waitUntil(Promise.all([
-    self.registration.showNotification(d.title, { body: d.body, icon: '/icon-192.png', badge: '/icon-192.png', tag: d.title }),
+    self.registration.showNotification(d.title, { body: d.body, icon: '/icon-192.png', badge: '/icon-192.png', tag: d.tag || d.title, renotify: !!d.tag }),
     d.title.startsWith('Alert:') ? bumpBadge().catch(() => {}) : null,
   ]));
 });

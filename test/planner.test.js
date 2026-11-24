@@ -163,3 +163,8 @@ test('preferWarm keeps order on a tie and does not touch the input', () => {
   assert.deepStrictEqual(input, [a, b]);
   assert.deepStrictEqual(plan.preferWarm([], true), []);
 });
+
+test('preferSafe also moves a ride that often never shows up behind a close alternative', () => {
+  const ghost = { arrive: 1000, legs: [{ type: 'ride', ghost: 40 }] }, ok = { arrive: 1180, legs: [{ type: 'ride' }] };
+  assert.deepStrictEqual(plan.preferSafe([ghost, ok]), [ok, ghost]);
+});

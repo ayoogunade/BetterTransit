@@ -379,8 +379,13 @@ const OCC = ['Empty', 'Many seats', 'Few seats', 'Standing room', 'Crowded', 'Fu
 const fullness = (occ) => (occ == null ? '' : `<span class="occ ${occ >= 3 ? 'busy' : occ === 2 ? '' : 'roomy'}">${icon('users')} ${OCC[occ]}</span>`);
 // A 60-foot articulated ("accordion") bus: true when it's the bus actually coming, 'usually' when past days say this run gets one
 const accordion = (artic) => (artic ? `<span class="artic ${artic === true ? '' : 'guess'}">${icon('bus')} ${artic === true ? 'Accordion' : 'Usually accordion'}</span>` : '');
+// Past days say this run is usually standing room or fuller (only until the live bus reports how full it is)
+const usuallyFull = (x) => (x.crowd && x.occ == null ? `<span class="occ busy guess">${icon('users')} Usually standing room</span>` : '');
+// Past days say no bus came for this run on this share of days (only while no bus is out for it)
+const ghostText = (pct) => `No bus came on ${pct}% of past days`;
+const ghostTag = (x) => (x.ghost ? `<span class="ghost">${icon('ghost')} ${ghostText(x.ghost)}</span>` : '');
 // Fleet number, accordion tag and fullness for a bus, as status pieces
-const busBits = (x) => [x.label ? busNo(x.label) : '', accordion(x.artic), fullness(x.occ)];
+const busBits = (x) => [x.label ? busNo(x.label) : '', accordion(x.artic), fullness(x.occ), usuallyFull(x)];
 const lastBus = `<span class="lastbus">${icon('moon')} Last bus</span>`; // the last scheduled trip of the day on this route and direction
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
@@ -388,7 +393,7 @@ function statusOf(a) {
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
   const ends = a.ends ? (a.continuesAs ? contText(a.continuesAs) : 'Drop-off only') : '';
-  if (!a.tracked) return [ends, 'Not tracked yet', accordion(a.artic), usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
+  if (!a.tracked) return [ends, 'Not tracked yet', accordion(a.artic), usuallyFull(a), ghostTag(a), usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
   return [...busBits(a), ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : '', a.last ? lastBus : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
@@ -726,7 +731,7 @@ syncStopAlerts();
 
 // ---------- plan ----------
 const place = { from: null, to: null };
-// Home / Work: one tap plans a trip there from where you are. Saved on this device only.
+// Home / Work: one tap plans a trip there from where you are. Synced between devices like pins.
 const SLOTS = [['home', 'Home'], ['work', 'Work']];
 let saved = store.get('saved', {}), pendingSlot = null, slotMins = {}, slotAt = 0;
 const TO_HINT = $('#to').placeholder;
@@ -861,10 +866,10 @@ const rideWatch = (l, nl, walkMins) => ({ ride: true, tripId: l.trip, alightStop
   ...(nl && { next: { tripId: nl.trip, boardStopId: nl.board.id, boardIdx: nl.boardIdx, walkSecs: walkMins * 60, route: nl.route, stopName: nl.board.name }, to: { lat: place.to.lat, lon: place.to.lon }, alightAt: { lat: l.alight.lat, lon: l.alight.lon } }) });
 const rideLabel = (l) => (watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? `${icon('bell-ring')} Stop alert on` : `${icon('bus')} I'm on this bus`);
 // the native share sheet when there is one, else copy the link
-async function shareLink(url) {
-  if (navigator.share) return void (await navigator.share({ title: 'My arrival', url }).catch(() => {}));
+async function shareLink(url, title = 'My arrival', copied = 'Link copied') {
+  if (navigator.share) return void (await navigator.share({ title, url }).catch(() => {}));
   await navigator.clipboard.writeText(url);
-  toast('Link copied');
+  toast(copied);
 }
 const tripPinLabel = (l) => `${icon('pin')} ${isStopPinned(l.board) ? 'Stop pinned' : 'Pin this stop'}`;
 $('#trip').onclick = async (e) => {
@@ -945,8 +950,8 @@ function tripCard(r, i) {
   const stopRow = (t, name) => `<div class="tr"><time>${clock(t)}</time><i class="dot"></i><b>${esc(name)}</b></div>`;
   const legs = r.legs.map((l, j) => l.type === 'walk'
     ? `<div class="tw">${icon('footprints')} ${l.mins} min</div>`
-    : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
-        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${Math.round((l.arr - l.dep) / 60)} min · ${l.stops} ${icon('signpost')}</small>
+    : `${l.stayOn ? `<div class="tw">${icon('repeat')} Stay on: becomes Route ${esc(l.route)} to ${esc(l.headsign)}</div>` : ''}${l.risk ? `<div class="tw warn">${icon('triangle-alert')} Tight transfer: the ${esc(l.risk.route)} is 3+ min late ${l.risk.late}% of the time here</div>` : ''}${l.ghost ? `<div class="tw warn">${icon('ghost')} ${ghostText(l.ghost)} on this run</div>` : ''}<div class="ride" style="--c:#${esc(l.color || '444')}">${stopRow(l.dep, l.from)}
+        <div class="tb">${badge(l.route, l.color)}<span class="hs">${esc(l.headsign)}</span>${l.live ? `<span class="live">${liveDot}live</span>` : ''}${l.last ? lastBus : ''}<small>${[`${Math.round((l.arr - l.dep) / 60)} min`, `${l.stops} ${icon('signpost')}`, ...busBits(l)].filter(Boolean).join(' · ')}</small>
           ${l.alight ? `<div class="left" data-left="${i}:${j}" role="status" hidden></div><div class="rbtns"><button class="btn rbtn ${watching.has(rideKey({ ride: true, alightStopId: l.alight.id, tripId: l.trip })) ? 'on' : ''}" data-ride="${i}:${j}">${rideLabel(l)}</button><button class="btn rbtn" data-share="${i}:${j}">${icon('share-2')} Share arrival</button></div>` : ''}</div>
         ${stopRow(l.arr, l.to)}</div>`).join('');
   // the bus you catch first: pin its stop or get an alert before it arrives there
@@ -1125,7 +1130,7 @@ const busIcon = (b) => L.divIcon({
   className: '', iconSize: [52, 52], iconAnchor: [26, 26],
   html: `<div class="bus${b.artic ? ' artic' : ''}" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
 });
-const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.occ == null ? '' : ` · ${OCC[b.occ]}`}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
+const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.artic ? ' · Accordion' : ''}${b.occ == null ? '' : ` · ${OCC[b.occ]}`}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
 
 function syncSeg() {
   $('.mapbar [data-mode=all]').textContent = shown ? 'My routes' : 'All';
@@ -1166,6 +1171,8 @@ function initMap() {
   $$('.mapbar .seg button').forEach((b) => (b.onclick = () => { mapMode = b.dataset.mode; store.set('mapMode', mapMode); $('#maproute').value = ''; fitNext = mapMode === 'pins'; syncSeg(); refreshMap(); }));
   let t;
   $('#maproute').oninput = () => { clearTimeout(t); t = setTimeout(() => { fitNext = true; syncSeg(); refreshMap(); }, 250); };
+  $('#follow').onclick = () => { follow = !follow; syncFollow(true); refreshMap(); };
+  map.on('dragstart', () => { if (follow) { follow = false; syncFollow(true); } });
   $('#locate').onclick = async () => {
     try {
       const p = await here(), ll = [p.lat, p.lon];
@@ -1249,12 +1256,18 @@ function drawDots() {
   }
 }
 
+// Follow my bus: while "I'm on this bus" is on, a button on the map keeps your bus in view. Panning the map yourself stops it.
+let follow = false;
+const ridingTrips = () => new Set(Object.entries(rideEnds).filter(([k, t]) => watching.has(k) && t > Date.now() / 1000 - 300).map(([k]) => k.split('|').slice(2).join('|'))); // ride|stop|trip
+const syncFollow = (on) => { const b = $('#follow'); b.hidden = !on; if (!on) follow = false; b.classList.toggle('on', follow); b.setAttribute('aria-pressed', follow); };
 async function refreshMap() {
   if (!map) return;
   let all;
   try { all = await api('/api/vehicles'); } catch { return; }
-  const rq = $('#maproute').value.trim();
-  const show = all.filter((b) => (rq ? num(b.route) === num(rq) : mapMode === 'pins' ? b.route && pinRoutes.has(b.route) : routeOn(b.route)));
+  const rq = $('#maproute').value.trim(), mine = ridingTrips(), me = all.find((b) => mine.has(b.trip));
+  const show = all.filter((b) => b === me || (rq ? num(b.route) === num(rq) : mapMode === 'pins' ? b.route && pinRoutes.has(b.route) : routeOn(b.route))); // your own bus always shows
+  syncFollow(!!me);
+  if (follow && me) { map.setView([me.lat, me.lon], Math.max(map.getZoom(), 15)); fitNext = false; }
   const seen = new Set();
   for (const b of show) {
     seen.add(b.id);
@@ -1357,7 +1370,7 @@ async function refreshAlerts() {
   if (!alertList) return ($('#alerts').innerHTML = emptyMsg('Alerts need a connection.', true));
   const a = alertList.filter((x) => !x.routes.length || x.routes.some(routeOn)), hidden = alertList.length - a.length; // alerts with no route are system-wide: always shown
   a.sort((x, y) => yours(y) - yours(x)); // alerts for your pinned routes first, then newest
-  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}<div class="sg" role="button" tabindex="0" data-testpush><span class="ico">${icon('bell-ring')}</span><span class="t"><b>Send a test notification</b><small>Check that notifications reach this device</small></span></div></div>`;
+  const ra = `<div class="card"><div class="sg" role="switch" tabindex="0" aria-checked="${routeAlerts}" data-routealerts><span class="ico">${icon('bell')}</span><span class="t"><b>Notify me about new alerts on my routes</b><small>Pinned routes and the routes at your pinned stops</small></span><span class="switch ${routeAlerts ? 'on' : ''}"></span></div>${quietRow()}<div class="sg" role="button" tabindex="0" data-testpush><span class="ico">${icon('bell-ring')}</span><span class="t"><b>Send a test notification</b><small>Check that notifications reach this device</small></span></div><div class="sg" role="button" tabindex="0" data-shortcut><span class="ico">${icon('mic')}</span><span class="t"><b>Siri &amp; Shortcuts link</b><small>Your pinned stops' next buses as one line of text, for a Shortcut or widget</small></span></div></div>`;
   $('#alerts').innerHTML = ra + filterBar(hidden ? ` · ${hidden} alert${hidden === 1 ? '' : 's'} hidden` : '') + (a.length ? a.map((x) => alertCard(x)).join('') : `<div class="empty">No active alerts${hidden ? ' for your routes' : ''}.</div>`);
   seenAlerts = new Set(alertList.map(alertKey)); // everything listed now counts as seen (and old keys drop off)
   store.set('seenAlerts', [...seenAlerts]);
@@ -1368,6 +1381,7 @@ $('#alerts').onclick = (e) => {
   if (e.target.closest('[data-routealerts]')) return toggleRouteAlerts();
   if (e.target.closest('[data-quiet]')) return openQuietSheet();
   if (e.target.closest('[data-testpush]')) return testPush();
+  if (e.target.closest('[data-shortcut]')) return shortcutLink();
   if (e.target.closest('[data-retry]')) return refreshAlerts();
   const c = e.target.closest('.alert');
   if (c) c.setAttribute('aria-expanded', c.classList.toggle('open'));
@@ -1381,6 +1395,13 @@ async function testPush() {
     const r = await post('/api/push/test', { sub }).then((x) => x.json());
     toast(r.ok ? 'Test notification sent' : r.error === 'subscription expired' ? 'Notifications expired here: turn an alert off and on' : 'Could not send a test notification');
   } catch { toast('Could not send a test notification'); }
+}
+
+// A link for Shortcuts' "Get Contents of URL" (then Speak Text, or a widget). With a login it carries its own key, listed under the
+// header's devices as "Siri & Shortcuts", so it can be signed out there like a lost phone.
+async function shortcutLink() {
+  try { const { url } = await post('/api/shortcut', {}).then((r) => r.json()); await shareLink(url, 'Better Transit for Shortcuts', 'Link copied: paste it into "Get Contents of URL"'); }
+  catch { toast('Could not make a Shortcuts link'); }
 }
 
 async function toggleRouteAlerts() {

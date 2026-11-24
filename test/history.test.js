@@ -42,11 +42,24 @@ test('the history survives a restart', () => {
 
 test('learns which runs usually get an articulated bus, after a few days', () => {
   const h = createHistory(tmp());
-  h.seenBus('50|University|28800|wk', true);
-  h.seenBus('50|University|28800|wk', true);
-  assert.strictEqual(h.articShare('50|University|28800|wk'), null);
-  h.seenBus('50|University|28800|wk', false);
-  assert.strictEqual(Math.round(h.articShare('50|University|28800|wk') * 100), 67);
-  assert.strictEqual(h.articShare('50|University|28800|sat'), null);
-  assert.strictEqual(h.articShare(undefined), null);
+  h.tally('bus', '50|University|28800|wk', true);
+  h.tally('bus', '50|University|28800|wk', true);
+  assert.strictEqual(h.share('bus', '50|University|28800|wk'), null);
+  h.tally('bus', '50|University|28800|wk', false);
+  assert.strictEqual(Math.round(h.share('bus', '50|University|28800|wk') * 100), 67);
+  assert.strictEqual(h.share('bus', '50|University|28800|sat'), null);
+  assert.strictEqual(h.share('bus', undefined), null);
+});
+
+test('a run needs five days before it can be called a no-show, and old stats from the first version still read', () => {
+  const f = tmp(), h = createHistory(f);
+  for (let i = 0; i < 4; i++) h.tally('ghost', '8|City Centre|30000|wk', i < 2);
+  assert.strictEqual(h.share('ghost', '8|City Centre|30000|wk'), null);
+  h.tally('ghost', '8|City Centre|30000|wk', false);
+  assert.strictEqual(h.share('ghost', '8|City Centre|30000|wk'), 0.4);
+  fs.writeFileSync(f, JSON.stringify({ 'bus|old': { n: 4, artic: 3 } }));
+  const h2 = createHistory(f);
+  assert.strictEqual(h2.share('bus', 'old'), 0.75);
+  h2.tally('bus', 'old', true);
+  assert.strictEqual(h2.share('bus', 'old'), 0.8);
 });

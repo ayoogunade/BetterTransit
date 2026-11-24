@@ -184,9 +184,13 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
         drop.add(w); continue;
       }
       if (hit.time - now > w.minutes * 60) continue;
-      const mins = Math.max(0, Math.round((hit.time - now) / 60));
-      await send(w, { title: `Route ${w.route} ${mins <= 0 ? 'is due' : `in ${mins} min`}`, body: `${w.headsign || ''} at ${w.stopName}${hit.live ? '' : ' (scheduled)'}` });
-      drop.add(w);
+      // A countdown, not a single ping: the heads-up at your chosen minutes, again at 3 min, and once it's due. All three share one
+      // tag, so each replaces the last on the lock screen instead of piling up.
+      const mins = Math.max(0, Math.round((hit.time - now) / 60)), step = mins <= 1 ? 2 : mins <= 3 ? 1 : 0;
+      if (w.step != null && step <= w.step) continue;
+      w.step = step;
+      if (await send(w, { title: `Route ${w.route} ${mins <= 0 ? 'is due' : `in ${mins} min`}`, body: `${w.headsign || ''} at ${w.stopName}${hit.live ? '' : ' (scheduled)'}`, tag: `bus|${w.stopId}|${w.tripId}` })) { drop.add(w); continue; }
+      if (step === 2) drop.add(w);
     }
     watches = watches.filter((w) => !drop.has(w));
     save(WATCHES, watches);
@@ -198,7 +202,7 @@ module.exports = function createPush({ arrivals, alerts = async () => [], progre
     publicKey: keys.publicKey,
     watch(w) { // the app re-registers its watches on every launch: keep what this one already announced
       const old = watches.find((x) => same(x, w));
-      if (old) for (const k of ['sent', 'since', 'rescued', 'sig']) if (old[k]) w[k] = old[k];
+      if (old) for (const k of ['sent', 'since', 'rescued', 'sig', 'step']) if (old[k] != null) w[k] = old[k];
       watches = watches.filter((x) => x !== old); watches.push(w); save(WATCHES, watches);
     },
     unwatch(w) { watches = watches.filter((x) => !same(x, w)); save(WATCHES, watches); },

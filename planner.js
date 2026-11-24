@@ -164,9 +164,10 @@ module.exports = function createPlanner({ stops, tripStops, trips }) {
       return u && ((slackMins < 3 && u.late >= 25) || (slackMins < u.avg && u.late >= 10)) ? { risk: { late: u.late, slackMins, route: r } } : undefined;
     });
   };
-  // Of two options arriving within 5 minutes of each other, the one without a risky transfer goes first
+  // Of two options arriving within 5 minutes of each other, the one without a risky transfer, or a ride that often never shows up
+  // (ghost: % of past days no bus came, from server.js busInfo), goes first
   plan.preferSafe = (opts) => {
-    const out = [...opts], risky = (o) => o.legs.some((l) => l.risk);
+    const out = [...opts], risky = (o) => o.legs.some((l) => l.risk || l.ghost);
     for (let i = 0; i + 1 < out.length; i++) if (risky(out[i]) && !risky(out[i + 1]) && Math.abs(out[i].arrive - out[i + 1].arrive) <= 300) [out[i], out[i + 1]] = [out[i + 1], out[i]];
     return out;
   };

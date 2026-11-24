@@ -100,3 +100,18 @@ test('share links: exactly /s/<token> and /api/shared/<token> are public, nothin
   // the server checks the parsed pathname, in which dot segments are already resolved
   for (const raw of ['/s/../api/sync', '/s/%2e%2e/api/sync', `/api/shared/${tok}/../../sync`, `/s/${tok}/../../api/sync`]) assert.strictEqual(a.check(req(), new URL(raw, 'http://x').pathname), false, raw);
 });
+
+test('a Siri & Shortcuts key works in the link for /api/say only, is listed with the devices, and can be signed out', () => {
+  const a = createAuth({ hash, file: sessionFile() }), key = a.mint();
+  const keyed = (p) => ({ headers: {}, url: `${p}?key=${encodeURIComponent(key)}` });
+  assert.strictEqual(a.check(keyed('/api/say'), '/api/say'), true);
+  assert.strictEqual(a.check(keyed('/api/arrivals/1'), '/api/arrivals/1'), false); // nowhere else
+  assert.strictEqual(a.check(keyed('/'), '/'), false);
+  assert.strictEqual(a.check({ headers: {}, url: '/api/say?key=nope.nope' }, '/api/say'), false);
+  assert.strictEqual(a.check({ headers: {}, url: '/api/say' }, '/api/say'), false);
+  const s = a.list(req()).find((x) => x.label === 'Siri & Shortcuts');
+  assert.ok(s);
+  a.revoke(s.id);
+  assert.strictEqual(a.check(keyed('/api/say'), '/api/say'), false);
+  assert.strictEqual(createAuth({ hash: '' }).mint(), null);
+});

@@ -95,7 +95,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .seg button { border: 0; background: none; padding: 10px 12px; font-size: 0.824rem; }
 .seg button.on { background: var(--accent); color: #fff; }
 .mapbar input { flex: 1; min-width: 0; padding: 10px 12px; }
-.mapbar #locate { border: 1px solid var(--line); background: var(--card); border-radius: 10px; font-size: 1.059rem; width: 44px; height: 42px; flex: none; }
+.mapbar #locate, .mapbar #follow { border: 1px solid var(--line); background: var(--card); border-radius: 10px; font-size: 1.059rem; width: 44px; height: 42px; flex: none; }
 #mapbox { height: calc(100dvh - 210px - env(safe-area-inset-bottom)); min-height: 320px; border-radius: 16px; box-shadow: var(--shadow); }
 .leaflet-div-icon { background: none; border: 0; }
 
@@ -147,8 +147,8 @@ body.noscroll { overflow: hidden; }
 .dirarrow .ic { width: 18px; height: 18px; fill: currentColor; }
 .dirs button .ic { width: 14px; height: 14px; }
 .opt > i { display: flex; } .opt > i .ic { width: 18px; height: 18px; }
-.mapbar #locate .ic, #swap .ic { width: 20px; height: 20px; }
-.mapbar #locate, #swap { display: flex; align-items: center; justify-content: center; }
+.mapbar #locate .ic, .mapbar #follow .ic, #swap .ic { width: 20px; height: 20px; }
+.mapbar #locate, .mapbar #follow, #swap { display: flex; align-items: center; justify-content: center; }
 .summary .ic { width: 22px; height: 22px; color: var(--muted); vertical-align: -0.2em; }
 .meta .ic, .tw .ic { width: 16px; height: 16px; margin-right: 2px; }
 .tb small .ic { width: 13px; height: 13px; vertical-align: -0.12em; }
@@ -440,3 +440,9 @@ a.catch { text-decoration: none; }
 body.stale #pins .eta .n, body.stale #nearby .eta .n { opacity: .5; }
 body.stale #pins .eta.soon .n, body.stale #nearby .eta.soon .n { background: var(--line); color: var(--muted); }
 body.stale #pins .pulse, body.stale #nearby .pulse { display: none; }
+
+.mapbar #follow[hidden] { display: none; }
+.mapbar #follow.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.occ.guess { font-weight: 400; } /* "Usually standing room": a pattern, not today's bus */
+.ghost { display: inline-flex; align-items: center; gap: 3px; color: var(--warn); }
+.ghost .ic { width: 13px; height: 13px; }
