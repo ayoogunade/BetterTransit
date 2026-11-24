@@ -246,7 +246,7 @@ async function openTripSheet(tripId, stopId) {
     const next = t.stops.findIndex((x) => x.time > now - 30), first = next < 0 ? t.stops.length - 1 : next, base = t.stops[first].time;
     const rows = t.stops.map((x, i) => `<div class="sg ${i < first ? 'past' : ''} ${x.id === stopId ? 'here' : ''}" ${i === first ? 'data-first' : ''}><span class="t"><b>${esc(x.name)}</b></span>
       <span class="when"><b>${clock(x.time)}</b>${i < first ? '' : `<small>+${Math.round((x.time - base) / 60)} min</small>`}</span></div>`).join('');
-    el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${[t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times', t.label ? busNo(t.label) : '', fullness(t.occ), 'from next stop'].filter(Boolean).join(' · ')}</small></div><button data-close class="done">Done</button></div>
+    el.innerHTML = `<div class="sheet-bar"><div><b>${badge(t.route, t.color)} ${icon('arrow-right')} ${esc(t.headsign)}</b><small>${[t.cancelled ? 'Cancelled' : t.live ? 'Live times' : 'Scheduled times', ...busBits(t), 'from next stop'].filter(Boolean).join(' · ')}</small></div><button data-close class="done">Done</button></div>
       <div class="sheet-list">${rows}</div>`;
     const list = el.querySelector('.sheet-list'), row = list.querySelector('[data-first]');
     if (row) list.scrollTop = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
@@ -369,6 +369,10 @@ const busNo = (label) => `<span class="busno">Bus #${esc(label)}</span>`; // the
 // How full the bus is (GTFS-rt occupancy 0-6), when the feed says; green while there are seats, amber once it's standing room
 const OCC = ['Empty', 'Many seats', 'Few seats', 'Standing room', 'Crowded', 'Full', 'Not taking riders'];
 const fullness = (occ) => (occ == null ? '' : `<span class="occ ${occ >= 3 ? 'busy' : occ === 2 ? '' : 'roomy'}">${icon('users')} ${OCC[occ]}</span>`);
+// A 60-foot articulated ("accordion") bus: true when it's the bus actually coming, 'usually' when past days say this run gets one
+const accordion = (artic) => (artic ? `<span class="artic ${artic === true ? '' : 'guess'}">${icon('bus')} ${artic === true ? 'Accordion' : 'Usually accordion'}</span>` : '');
+// Fleet number, accordion tag and fullness for a bus, as status pieces
+const busBits = (x) => [x.label ? busNo(x.label) : '', accordion(x.artic), fullness(x.occ)];
 const lastBus = `<span class="lastbus">${icon('moon')} Last bus</span>`; // the last scheduled trip of the day on this route and direction
 function statusOf(a) {
   if (a.cancelled) return '<em class="bad">Cancelled</em>';
@@ -376,9 +380,9 @@ function statusOf(a) {
   if (a.gone) return 'Just left';
   if (a.stale) return 'Signal lost · last prediction';
   const ends = a.ends ? (a.continuesAs ? contText(a.continuesAs) : 'Drop-off only') : '';
-  if (!a.tracked) return [ends, 'Not tracked yet', usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
+  if (!a.tracked) return [ends, 'Not tracked yet', accordion(a.artic), usualText(a), a.last ? lastBus : ''].filter(Boolean).join(' · ');
   const d = Math.round((a.delay || 0) / 60);
-  return [a.label ? busNo(a.label) : '', fullness(a.occ), ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
+  return [...busBits(a), ends, a.stopsAway == null ? '' : a.stopsAway === 0 ? 'Your stop is next' : `${a.stopsAway} stop${a.stopsAway === 1 ? '' : 's'} away`,
     d > 0 ? `${d} min late` : d < 0 ? `<em class="early">${-d} min early</em>` : 'On time', a.usual && a.usual.late >= 30 ? usualText(a) : '', a.last ? lastBus : ''].filter(Boolean).join(' · '); // a live bus only gets the history when it is often late
 }
 const arrivalEta = (a) => (!isComing(a)
@@ -437,7 +441,7 @@ function routeCard(r, buses) {
       return `
     <div class="row ${i ? '' : 'first'}" role="button" tabindex="0" data-open="${esc(b.trip)}">
       <span class="dirarrow" style="transform:rotate(${b.bearing == null ? 0 : b.bearing}deg)">${icon('navigation-2')}</span>
-      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}${b.label || b.occ != null ? `<small>${[b.label ? busNo(b.label) : '', fullness(b.occ)].filter(Boolean).join(' · ')}</small>` : ''}</span>
+      <span class="hs">${b.next ? 'Next: ' + esc(b.next.stop) : 'In service'}${b.label || b.occ != null ? `<small>${busBits(b).filter(Boolean).join(' · ')}</small>` : ''}</span>
       ${b.next ? etaHtml(b.next.time, age) : `<span class="eta">${age}</span>`}
     </div>`;
     }).join('')).join('') : '<div class="empty">No buses in service right now</div>';
@@ -1069,7 +1073,7 @@ const markers = new Map(); // vehicle id -> marker, updated in place so buses gl
 
 const busIcon = (b) => L.divIcon({
   className: '', iconSize: [52, 52], iconAnchor: [26, 26],
-  html: `<div class="bus" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
+  html: `<div class="bus${b.artic ? ' artic' : ''}" style="--c:#${esc(b.color || '444')}">${b.bearing == null ? '' : `<div class="arrow" style="transform:rotate(${b.bearing}deg)"></div>`}<div class="dot"><small>${esc(b.label)}</small><b>${esc(b.route || '?')}</b></div></div>`,
 });
 const busPopup = (b) => `<b>Route ${esc(b.route)} ${icon('arrow-right')} ${esc(b.headsign)}</b><br>Bus #${esc(b.label)}${b.occ == null ? '' : ` · ${OCC[b.occ]}`}${b.next ? `<br>Next: ${esc(b.next.stop)} · ${etaText(b.next.time)}` : ''}${b.age == null ? '' : `<br>Updated ${ageText(b.age)} ago`}`;
 

@@ -104,6 +104,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .bus .dot small { font-size: 8px; opacity: .9; }
 .bus .dot b { font-size: 13px; }
 .far .bus .dot small { display: none; }
+.bus.artic .dot { box-shadow: 0 0 0 2px var(--c), 0 0 0 4px #fff, 0 1px 6px rgba(0,0,0,.45); } /* accordion bus: double ring */
 .stopdot { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 4px solid var(--accent); box-sizing: border-box; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 .me { width: 16px; height: 16px; border-radius: 50%; background: #2563eb; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(37,99,235,.25); }
 
@@ -402,6 +403,10 @@ header { align-items: center; }
 .occ.roomy { color: var(--accent); }
 .occ.busy { color: var(--warn); font-weight: 600; }
 .occ .ic { width: 13px; height: 13px; }
+/* articulated (accordion) bus; a guess from past days is quieter */
+.artic { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-weight: 600; }
+.artic.guess { color: var(--muted); font-weight: 400; }
+.artic .ic { width: 13px; height: 13px; }
 
 /* walk line on a stop card opens walking directions */
 a.catch { text-decoration: none; }

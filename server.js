@@ -6,6 +6,8 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const AdmZip = require('adm-zip');
 const GtfsRt = require('gtfs-realtime-bindings').transit_realtime;
+const { isArtic } = require('./fleet');
+const ARTIC_USUALLY = 0.6; // a run that got an articulated bus on 60%+ of past days is tagged "Usually accordion" before its bus shows up
 
 const PORT = process.env.PORT || 3000;
 const RT = 'https://saskprdtmgtfs.sasktrpcloud.com/TMGTFSRealTimeWebService';
@@ -80,6 +82,12 @@ function activeServices(date) {
 // Cached per stop and day, so one pass over the stop's times serves every request that day.
 const tripKey = (t) => `${t.route_id}|${t.trip_headsign}`;
 const dayOf = (t) => new Date((t + TZ_OFFSET_SEC) * 1000).toISOString().slice(0, 10);
+// The same scheduled run from one day to the next (trip ids change with each new schedule): route, headsign, start time, and
+// weekday / Saturday / Sunday. Used to learn which runs usually get an articulated bus.
+const runKey = (tripId, day) => {
+  const t = trips[tripId], r = t && routes[t.route_id];
+  return r && `${r.route_short_name}|${t.trip_headsign}|${tripStops[tripId][0].t}|${day === 0 ? 'sun' : day === 6 ? 'sat' : 'wk'}`;
+};
 function lastTrips(stopId, services, day) {
   const k = `${day}|${stopId}`;
   if (lastCache.has(k)) return lastCache.get(k);
@@ -166,15 +174,18 @@ async function arrivals(id) {
 // What the realtime feeds say about every trip, rebuilt once per feed message:
 // tripId -> { cancelled, at: Map(stop index -> {time, skipped}), next: index of the first stop still ahead (null: trip finished), bus: a vehicle is on it,
 //   label: that vehicle's fleet number, occ: how full it is (see occOf) }
-// plus the blocks that have a bus out right now (blockId -> start time of the trip that bus is running).
+// plus the blocks that have a bus out right now (blockId -> start time of the trip that bus is running) and that bus's fleet number
+// (blockBus), since the same bus will run the block's later trips.
 const stateCache = new WeakMap();
+const busSeen = new Set(); // day|trip pairs already counted in the bus-kind history
 // GTFS-rt occupancy: 0 empty ... 6 not accepting passengers. 7 (no data) and 8 (not boardable) say nothing about room, so they're dropped.
 const occOf = (v) => (Object.hasOwn(v, 'occupancyStatus') && v.occupancyStatus <= 6 ? v.occupancyStatus : null);
 async function realtimeState() {
   const msg = await feed('TripUpdate/TripUpdates.pb'), vmsg = await feed('Vehicle/VehiclePositions.pb');
   const hit = stateCache.get(msg);
   if (hit && hit.vmsg === vmsg) return hit;
-  const now = Date.now() / 1000, byTrip = new Map(), blocks = new Map();
+  const now = Date.now() / 1000, byTrip = new Map(), blocks = new Map(), blockBus = new Map();
+  const local = new Date((now + TZ_OFFSET_SEC) * 1000), today = dayOf(now);
   for (const e of msg.entity) {
     const tu = e.tripUpdate, sts = tu && tripStops[tu.trip.tripId];
     if (!sts) continue; // ad-hoc trips with no route we can name
@@ -193,10 +204,18 @@ async function realtimeState() {
     const id = e.vehicle && e.vehicle.trip && e.vehicle.trip.tripId, t = trips[id];
     if (!t) continue;
     if (byTrip.has(id)) Object.assign(byTrip.get(id), { bus: true, label: (e.vehicle.vehicle && e.vehicle.vehicle.label) || null, occ: occOf(e.vehicle) });
-    const start = tripStops[id][0].t;
-    if (t.block_id && !(blocks.get(t.block_id) <= start)) blocks.set(t.block_id, start);
+    const start = tripStops[id][0].t, label = e.vehicle.vehicle && e.vehicle.vehicle.label;
+    if (t.block_id && !(blocks.get(t.block_id) <= start)) { blocks.set(t.block_id, start); if (label) blockBus.set(t.block_id, label); else blockBus.delete(t.block_id); }
+    // learn which kind of bus this run gets, once per run per day (vehicles running today's trips only)
+    const seen = `${today}|${id}`;
+    if (label && (e.vehicle.trip.startDate || '').replace(/-/g, '') === today.replace(/-/g, '') && !busSeen.has(seen)) {
+      busSeen.add(seen);
+      const k = runKey(id, local.getUTCDay());
+      if (k) history.seenBus(k, isArtic(label));
+    }
   }
-  const out = { vmsg, byTrip, blocks };
+  for (const k of busSeen) if (!k.startsWith(today)) busSeen.delete(k);
+  const out = { vmsg, byTrip, blocks, blockBus };
   stateCache.set(msg, out);
   return out;
 }
@@ -223,7 +242,7 @@ async function rideProgress(tripId) {
 //   last: the last scheduled trip of this route+headsign from here today
 async function arrivalsAt(stopId) {
   const now = Math.floor(Date.now() / 1000);
-  const { byTrip, blocks } = await realtimeState();
+  const { byTrip, blocks, blockBus } = await realtimeState();
   const localMidnight = Math.floor((now + TZ_OFFSET_SEC) / 86400) * 86400 - TZ_OFFSET_SEC;
   const local = new Date((now + TZ_OFFSET_SEC) * 1000), services = activeServices(local), weekend = [0, 6].includes(local.getUTCDay());
   const lastOf = lastTrips(stopId, services, dayOf(now)), out = [];
@@ -235,6 +254,9 @@ async function arrivalsAt(stopId) {
     const base = { ...shape(st.trip, sched, false), sched, ...(idx === sts.length - 1 && { ends: true, ...(continuesAs(st.trip) && { continuesAs: continuesAs(st.trip) }) }), ...(lastOf.get(tripKey(t)) === st.trip && { last: true }) }; // ends: last stop, you can't board it
     const usual = history.usual(base.route, stopId, weekend, Math.floor(st.t / 3600) % 24); // how this bus tends to run at this hour
     if (usual) base.usual = usual;
+    // An articulated bus: known from the bus on this trip, or the one out on an earlier run of its block; else a guess from past days
+    const share = history.articShare(runKey(st.trip, local.getUTCDay()));
+    if (share >= ARTIC_USUALLY) base.artic = 'usually';
     if (s && s.cancelled) { if (sched > now - 60) out.push({ ...base, cancelled: true }); continue; }
     const p = s && s.at.get(idx);
     if (p && p.skipped) { if (sched > now - 60) out.push({ ...base, skipped: true }); continue; }
@@ -247,7 +269,8 @@ async function arrivalsAt(stopId) {
       lastGood.set(key, { time: p.time, seen: Date.now(), tracked });
       // stops away only once the bus has actually started this trip (it may be waiting at the first stop)
       const started = s.bus && (s.next > 0 || (s.at.get(0) || {}).time <= now);
-      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }), ...(s.label && { label: s.label }), ...(s.occ != null && { occ: s.occ }) });
+      const label = s.label || (tracked && blockBus.get(t.block_id)), kind = label ? { label, artic: isArtic(label) || undefined } : {};
+      out.push({ ...base, time: p.time, live: tracked, tracked, delay: p.time - sched, ...(started && { stopsAway: idx - s.next }), ...kind, ...(s.occ != null && { occ: s.occ }) });
       continue;
     }
     // the feed dropped the trip. Trips leave the feed when the bus reaches its last stop, so one that was due has arrived;
@@ -294,7 +317,7 @@ async function vehicles(routeFilter) {
       id, label: v.vehicle && v.vehicle.label, trip: v.trip && v.trip.tripId, lat: v.position.latitude, lon: v.position.longitude,
       age: Number(v.timestamp) ? Math.max(0, Math.round(Date.now() / 1000 - Number(v.timestamp))) : null, // seconds since the bus last reported
       bearing: lastBearing.has(id) ? lastBearing.get(id) : null,
-      route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, occ: occOf(v),
+      route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, occ: occOf(v), artic: isArtic(v.vehicle && v.vehicle.label),
       next: n && { stop: stopName(n.stop), time: n.time },
     });
   }
@@ -336,7 +359,7 @@ async function tripTimeline(tripId) {
   const now = Math.floor(Date.now() / 1000), times = await liveTimes(), live = times.get(tripId), r = routes[t.route_id] || {};
   const rt = (await realtimeState()).byTrip.get(tripId);
   return {
-    trip: tripId, label: (rt && rt.label) || null, occ: rt ? rt.occ ?? null : null, next: rt && rt.at.size ? rt.next : undefined, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
+    trip: tripId, label: (rt && rt.label) || null, artic: !!(rt && isArtic(rt.label)), occ: rt ? rt.occ ?? null : null, next: rt && rt.at.size ? rt.next : undefined, route: r.route_short_name, color: r.route_color, headsign: t.trip_headsign, live: !!live, cancelled: times.get(tripId) === null, continuesAs: continuesAs(tripId) || null,
     stops: sts.map((st, i) => { const s = stopOf(st.stop); return { id: st.stop, name: s.stop_name, lat: +s.stop_lat || null, lon: +s.stop_lon || null, time: realTime(live ? live[i] : st.t, now) }; }), // lat/lon: "Show on map" draws the ride through them
   };
 }
@@ -489,7 +512,7 @@ const chatTools = {
     return { stop: nameOf(stop_id), arrivals: (await arrivals(stop_id)).map((a) => ({
       route: a.route, toward: a.headsign, time: clockAt(a.time), in_minutes: Math.round((a.time - now) / 60), trip_id: a.trip,
       status: a.cancelled ? 'cancelled' : a.skipped ? 'not stopping here (detour)' : a.gone ? 'just left' : a.stale ? 'signal lost' : a.tracked ? 'live' : 'scheduled only',
-      ...(a.tracked && { delay_minutes: Math.round((a.delay || 0) / 60) }), ...(a.stopsAway != null && { stops_away: a.stopsAway }), ...(a.label && { bus: a.label }),
+      ...(a.tracked && { delay_minutes: Math.round((a.delay || 0) / 60) }), ...(a.stopsAway != null && { stops_away: a.stopsAway }), ...(a.label && { bus: a.label }), ...(a.artic && { articulated_bus: a.artic === 'usually' ? 'usually (not confirmed today)' : true }),
       ...(a.usual && { history: u(a.usual) }), ...(a.last && { last_bus: true }), ...(a.ends && { drop_off_only: true }) })) };
   },
   stop_timetable({ stop_id, date, route, after }) {
@@ -500,7 +523,7 @@ const chatTools = {
   },
   async route_buses({ route }) {
     const now = Date.now() / 1000, list = await vehicles([String(route)]);
-    return list.length ? list.map((v) => ({ bus: v.label, toward: v.headsign, ...(v.next && { next_stop: v.next.stop, there_in_minutes: Math.max(0, Math.round((v.next.time - now) / 60)) }), position_age_seconds: v.age })) : 'No buses on that route right now';
+    return list.length ? list.map((v) => ({ bus: v.label, ...(v.artic && { articulated: true }), toward: v.headsign, ...(v.next && { next_stop: v.next.stop, there_in_minutes: Math.max(0, Math.round((v.next.time - now) / 60)) }), position_age_seconds: v.age })) : 'No buses on that route right now';
   },
   async service_alerts({ route }) {
     const list = (await alerts()).filter((a) => !route || a.routes.includes(String(route)));

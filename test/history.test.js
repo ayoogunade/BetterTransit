@@ -39,3 +39,14 @@ test('the history survives a restart', () => {
   h.flush();
   assert.strictEqual(createHistory(f).usual('9', 'S5', true, 12).avg, 6);
 });
+
+test('learns which runs usually get an articulated bus, after a few days', () => {
+  const h = createHistory(tmp());
+  h.seenBus('50|University|28800|wk', true);
+  h.seenBus('50|University|28800|wk', true);
+  assert.strictEqual(h.articShare('50|University|28800|wk'), null);
+  h.seenBus('50|University|28800|wk', false);
+  assert.strictEqual(Math.round(h.articShare('50|University|28800|wk') * 100), 67);
+  assert.strictEqual(h.articShare('50|University|28800|sat'), null);
+  assert.strictEqual(h.articShare(undefined), null);
+});

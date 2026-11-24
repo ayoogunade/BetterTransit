@@ -8,6 +8,7 @@ const FILE = path.join(__dirname, 'data', 'history.json');
 const CAP = 200; // samples per slot before older ones start to fade
 const MIN = 5; // samples a slot needs before we show anything
 const LATE_SECS = 180; // "late" means three minutes or more behind the timetable
+const BUS_CAP = 20, BUS_MIN = 3; // which kind of bus runs a trip: recent days count most, and 3 days are needed before we guess
 
 module.exports = function createHistory(file = FILE, { flushMs = 5 * 60e3 } = {}) {
   let stats = {};
@@ -37,6 +38,18 @@ module.exports = function createHistory(file = FILE, { flushMs = 5 * 60e3 } = {}
     usual(route, stop, weekend, hour) {
       const s = stats[key(route, stop, weekend, hour)];
       return s && s.n >= MIN ? { avg: Math.round(s.sum / s.n / 60), late: Math.round((100 * s.late) / s.n), n: Math.round(s.n) } : null;
+    },
+    // One sighting of the bus running a scheduled trip (trip = a key that stays the same from day to day), at most once a day
+    seenBus(trip, artic) {
+      const s = (stats[`bus|${trip}`] ||= { n: 0, artic: 0 });
+      if (s.n >= BUS_CAP) { s.n *= 0.9; s.artic *= 0.9; }
+      s.n++; if (artic) s.artic++;
+      dirty = true;
+    },
+    // Share (0-1) of days this trip got an articulated bus, or null when it hasn't been seen often enough
+    articShare(trip) {
+      const s = stats[`bus|${trip}`];
+      return s && s.n >= BUS_MIN ? s.artic / s.n : null;
     },
     flush,
   };
